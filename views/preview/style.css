@@ -1,0 +1,23 @@
+/* SPDX-License-Identifier: AGPL-3.0-only; Copyright (C) 2026 Shennoter */
+:root { color-scheme: light; --bg:#f7f8fb; --surface:#fff; --text:#202b3d; --muted:#59677b; --border:#d2dae5; --primary:#315dc8; }
+[data-theme="dark"] { color-scheme:dark; --bg:#171c27; --surface:#222a39; --text:#e9edf5; --muted:#afbbcd; --border:#46516a; --primary:#729bff; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font:16px/1.65 system-ui,sans-serif; }
+main { max-width:850px; margin:0 auto; padding:32px 24px; }
+h1 { font-size:28px; margin:0 0 8px; }
+h2 { font-size:18px; margin:0; }
+p { color:var(--muted); }
+section,form { padding:22px; margin-top:20px; border:1px solid var(--border); background:var(--surface); border-radius:12px; }
+.section-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+#settings { white-space:pre-wrap; overflow-wrap:anywhere; }
+label { display:block; font-weight:600; margin-bottom:8px; }
+textarea,select { width:100%; padding:10px 12px; margin-bottom:18px; border:1px solid var(--border); border-radius:7px; background:var(--bg); color:var(--text); font:inherit; }
+textarea { resize:vertical; }
+button { border:1px solid var(--primary); border-radius:7px; padding:9px 16px; color:var(--primary); background:var(--surface); font:inherit; cursor:pointer; }
+#generate { background:var(--primary); color:var(--bg); }
+button:disabled { opacity:.5; cursor:default; }
+.hint,#count { color:var(--muted); font-size:14px; font-weight:400; }
+.error { color:#dc5151; }
+audio { width:100%; margin-top:16px; }
+a { color:var(--primary); }
+@media(max-width:500px) { main { padding:20px 12px; } section,form { padding:16px; } }

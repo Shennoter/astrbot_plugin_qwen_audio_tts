@@ -1,85 +1,366 @@
 {
   "connection": {
-    "description": "连接与兼容修复",
+    "description": "语音服务配置",
     "type": "object",
     "items": {
-      "workspace": {"description": "业务空间 ID 或完整域名", "type": "string", "default": "", "hint": "必填。北京 ID 可直接填 ws-xxx；新加坡需填完整域名。密钥仍从模型管理中的对应提供商读取。"},
-      "provider_id": {"description": "语音使用的提供商 ID", "type": "string", "default": "", "hint": "填写模型管理页面的 ID，不是音色 ID。留空时跟随当前会话选择的 TTS 提供商。"},
-      "patch_builtin": {"description": "修复内置 Qwen-Audio-TTS 调用", "type": "bool", "default": true, "hint": "运行时接管内置 qwen-audio-* 请求，不修改源码。官方修复后可关闭；随机回复和朗读功能仍可用。修改后重载插件。"},
-      "timeout": {"description": "单次网络操作超时（秒）", "type": "int", "default": 60, "hint": "5～300；合成和下载分别使用此超时，不自动重复计费重试。"},
-      "max_concurrent": {"description": "最大并发合成数", "type": "int", "default": 2, "hint": "1～8，修改后重载插件。"},
-      "use_file_service": {"description": "通过 AstrBot 文件服务发送语音", "type": "bool", "default": false, "hint": "适配器无法访问本地文件时开启；需要先配置可从适配器访问的 callback_api_base。"},
-      "keep_hours": {"description": "语音文件保留小时", "type": "int", "default": 24, "hint": "1～720；合成时每小时清理一次本插件目录中的过期文件。不会清理其他文件。"}
+      "api_key": {
+        "description": "API Key",
+        "type": "string",
+        "secret": true,
+        "default": "",
+        "hint": "必填。在插件内独立配置阿里云百炼 API Key，与业务空间所在地域一致；不读取或修改内置 TTS 提供商。"
+      },
+      "workspace": {
+        "description": "业务空间 ID 或完整域名",
+        "type": "string",
+        "default": "",
+        "hint": "必填。北京可直接填 ws-xxx；新加坡需填写完整业务空间域名。"
+      },
+      "model": {
+        "description": "语音模型",
+        "type": "string",
+        "default": "qwen-audio-3.1-tts-plus",
+        "options": [
+          "qwen-audio-3.1-tts-plus",
+          "qwen-audio-3.1-tts-flash",
+          "qwen-audio-3.0-tts-plus",
+          "qwen-audio-3.0-tts-flash"
+        ],
+        "hint": "必须与复刻音色创建时绑定的模型相同。"
+      },
+      "voice": {
+        "description": "音色 ID",
+        "type": "string",
+        "default": "",
+        "hint": "必填。填写所选模型支持的系统音色，或自己账号下已创建的完整复刻音色 ID；不需要在 AstrBot 模型管理创建 TTS 提供商。"
+      },
+      "timeout": {
+        "description": "单次网络操作超时（秒）",
+        "type": "int",
+        "default": 60,
+        "hint": "5～300；合成和下载分别使用此超时，不自动重复计费重试。"
+      },
+      "max_concurrent": {
+        "description": "最大并发合成数",
+        "type": "int",
+        "default": 2,
+        "hint": "1～8，修改后重载插件。"
+      },
+      "use_file_service": {
+        "description": "通过 AstrBot 文件服务发送语音",
+        "type": "bool",
+        "default": false,
+        "hint": "适配器无法访问本地文件时开启；需要先配置可从适配器访问的 callback_api_base。"
+      },
+      "keep_hours": {
+        "description": "语音文件保留小时",
+        "type": "int",
+        "default": 24,
+        "hint": "1～720；合成时每小时清理一次本插件目录中的过期文件。不会清理其他文件。"
+      }
     }
   },
   "reply": {
     "description": "随机语音回复",
     "type": "object",
     "items": {
-      "enabled": {"description": "启用随机转语音", "type": "bool", "default": true, "hint": "使用前关闭 AstrBot 内置自动 TTS 和聊天流式输出。"},
-      "probability": {"description": "转语音概率（百分比）", "type": "float", "default": 20.0, "hint": "0～100，20 表示 20%；对符合条件的完整回复抽取一次。"},
-      "max_chars": {"description": "TTS 最大字数", "type": "int", "default": 200, "hint": "1～10000，按 Unicode 字符数计算，包含标点、英文字符和空格；自动回复超限则保留完整文字，朗读命令超限则提示缩短。此上限不代表模型允许的最大输入长度。"},
-      "only_llm": {"description": "只转换 AI 生成的回复", "type": "bool", "default": true, "hint": "关闭后也转换经过发送前钩子的普通插件回复；指定朗读命令和状态命令不会二次转换。"},
-      "dual_output": {"description": "语音与原文同时发送", "type": "bool", "default": false},
-      "cooldown_seconds": {"description": "同一会话自动语音冷却（秒）", "type": "float", "default": 10.0, "hint": "0～3600，冷却期间继续发送原文字；每个会话单独计算。"},
-      "skip_code": {"description": "遇到代码块保留文字", "type": "bool", "default": true},
-      "clean_markdown": {"description": "朗读前清理 Markdown 和网址", "type": "bool", "default": true, "hint": "仅处理自动回复的朗读文本；双输出时仍保留原文，指定句子命令不做这种清理。图片、卡片等混合消息默认不转换。"}
+      "enabled": {
+        "description": "启用随机转语音",
+        "type": "bool",
+        "default": true,
+        "hint": "使用前关闭 AstrBot 内置自动 TTS 和聊天流式输出。"
+      },
+      "probability": {
+        "description": "转语音概率（百分比）",
+        "type": "float",
+        "default": 20.0,
+        "hint": "0～100，20 表示 20%；对符合条件的完整回复抽取一次。"
+      },
+      "max_chars": {
+        "description": "TTS 最大字数",
+        "type": "int",
+        "default": 200,
+        "hint": "1～10000，按 Unicode 字符数计算，包含标点、英文字符和空格；自动回复超限则保留完整文字，朗读命令超限则提示缩短。此上限不代表模型允许的最大输入长度。"
+      },
+      "only_llm": {
+        "description": "只转换 AI 生成的回复",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后也转换经过发送前钩子的普通插件回复；朗读、试听和语音设置操作不会二次转换。"
+      },
+      "dual_output": {
+        "description": "语音与原文同时发送",
+        "type": "bool",
+        "default": false
+      },
+      "cooldown_seconds": {
+        "description": "同一会话自动语音冷却（秒）",
+        "type": "float",
+        "default": 10.0,
+        "hint": "0～3600，冷却期间继续发送原文字；每个会话单独计算。"
+      },
+      "skip_code": {
+        "description": "遇到代码块保留文字",
+        "type": "bool",
+        "default": true
+      },
+      "clean_markdown": {
+        "description": "朗读前清理 Markdown 和网址",
+        "type": "bool",
+        "default": true,
+        "hint": "仅处理自动回复的朗读文本；双输出时仍保留原文，指定句子命令不做这种清理。图片、卡片等混合消息默认不转换。"
+      }
     }
   },
   "command": {
     "description": "指定语言朗读命令",
     "type": "object",
     "items": {
-      "enabled": {"description": "启用 /说话 命令", "type": "bool", "default": true, "hint": "/说话 zh 你好；/说话 en Hello world；/说话 ja こんにちは。也支持 中文、英语、日语 等名称，只朗读原文，不翻译。"},
-      "admin_only": {"description": "仅管理员可使用朗读命令", "type": "bool", "default": false},
-      "cooldown_seconds": {"description": "同一用户朗读冷却（秒）", "type": "float", "default": 3.0, "hint": "0～3600；按用户和会话分别计算。"}
+      "enabled": {
+        "description": "启用 /说话 命令",
+        "type": "bool",
+        "default": true,
+        "hint": "/说话 zh 你好；/说话 en Hello world；/说话 ja こんにちは。也支持 中文、英语、日语 等名称，只朗读原文，不翻译。"
+      },
+      "admin_only": {
+        "description": "仅管理员可使用朗读命令",
+        "type": "bool",
+        "default": false
+      },
+      "cooldown_seconds": {
+        "description": "同一用户朗读冷却（秒）",
+        "type": "float",
+        "default": 3.0,
+        "hint": "0～3600；按用户和会话分别计算。"
+      }
     }
   },
   "scope": {
     "description": "启用范围（随机回复和朗读命令共用）",
     "type": "object",
     "items": {
-      "chat_type": {"description": "聊天类型", "type": "string", "default": "全部", "options": ["全部", "仅私聊", "仅群聊"]},
-      "platforms": {"description": "平台名称白名单", "type": "list", "default": [], "hint": "空列表表示不限制。例：aiocqhttp、webchat。"},
-      "allowed_sessions": {"description": "会话白名单", "type": "list", "default": [], "hint": "空列表表示不限制。发送 /语音状态 可查看当前完整会话标识。"},
-      "blocked_sessions": {"description": "会话黑名单", "type": "list", "default": [], "hint": "优先于白名单；填写完整会话标识。"}
+      "chat_type": {
+        "description": "聊天类型",
+        "type": "string",
+        "default": "全部",
+        "options": [
+          "全部",
+          "仅私聊",
+          "仅群聊"
+        ]
+      },
+      "platforms": {
+        "description": "平台名称白名单",
+        "type": "list",
+        "default": [],
+        "hint": "空列表表示不限制。例：aiocqhttp、webchat。"
+      },
+      "allowed_sessions": {
+        "description": "会话白名单",
+        "type": "list",
+        "default": [],
+        "hint": "空列表表示不限制。在目标会话发送 AstrBot 内置 /sid，复制返回的 UMO 完整值，不带「」；不要填写 UID 或单独的 Session ID。"
+      },
+      "blocked_sessions": {
+        "description": "会话黑名单",
+        "type": "list",
+        "default": [],
+        "hint": "优先于白名单。在目标会话发送 /sid，填写返回的 UMO 完整值，不带「」。"
+      }
     }
   },
   "pronunciation": {
     "description": "单次发音控制与持久替换词典",
     "type": "object",
     "items": {
-      "request_mode": {"description": "对话单次参数发送方式", "type": "string", "default": "hot_fix", "options": ["hot_fix", "instruction", "both"], "hint": "hot_fix：只采用单次结构化读音；instruction：采用单次自然语言指令，也可把单次读音映射转成指令；both：两者结合。只控制单次覆盖，下面的持久词典和音频页全局参数仍生效。指令不能保证准确发音。"},
-      "dictionary_enabled": {"description": "启用持久替换词典", "type": "bool", "default": true},
-      "dictionary_language": {"description": "持久词典适用语言", "type": "string", "default": "all", "options": ["all", "zh", "en", "ja"], "hint": "all 应用于所有请求；其他选项仅在请求明确指定对应语言时使用，auto 不做语言猜测。"},
-      "dictionary_json": {"description": "持久替换词典（JSON）", "type": "text", "default": "{}", "hint": "词语到读音的映射，例如 {\"鳳凰院凶真\":\"ほうおういん きょうま\"}。保存后重启仍保留，应用到自动回复、命令、工具和兼容调用；不改显示原文。同词优先级：单次读音 > 此词典 > 音频页 hot_fix。支持自然语言请求管理员添加、修改、删除。"}
+      "request_mode": {
+        "description": "对话单次参数发送方式",
+        "type": "string",
+        "default": "hot_fix",
+        "options": [
+          "hot_fix",
+          "instruction",
+          "both"
+        ],
+        "hint": "hot_fix：只采用单次结构化读音；instruction：采用单次自然语言指令，也可把单次读音映射转成指令；both：两者结合。只控制单次覆盖，下面的持久词典和音频页全局参数仍生效。指令不能保证准确发音。"
+      },
+      "dictionary_enabled": {
+        "description": "启用持久替换词典",
+        "type": "bool",
+        "default": true
+      },
+      "dictionary_language": {
+        "description": "持久词典适用语言",
+        "type": "string",
+        "default": "all",
+        "options": [
+          "all",
+          "zh",
+          "en",
+          "ja"
+        ],
+        "hint": "all 应用于所有请求；其他选项仅在请求明确指定对应语言时使用，auto 不做语言猜测。"
+      },
+      "dictionary_json": {
+        "description": "持久替换词典（JSON）",
+        "type": "text",
+        "default": "{}",
+        "hint": "词语到读音的映射，例如 {\"鳳凰院凶真\":\"ほうおういん きょうま\"}。保存后重启仍保留，应用到自动回复、朗读、试听和工具；不改显示原文。同词优先级：单次读音 > 此词典 > 音频页 hot_fix。支持自然语言请求管理员添加、修改、删除。"
+      }
     }
   },
   "natural": {
     "description": "自然语言调用",
     "type": "object",
     "items": {
-      "enabled": {"description": "启用语音自然语言工具", "type": "bool", "default": true, "hint": "需要聊天模型支持工具调用，并在 AstrBot 启用 qwen_speak、qwen_voice_control、qwen_voice_dictionary 三个工具。例：用日语读一下这个名字，这次读作……。长期设置和词典修改仅管理员可用。"}
+      "enabled": {
+        "description": "启用语音自然语言工具",
+        "type": "bool",
+        "default": true,
+        "hint": "需要聊天模型支持工具调用，并在 AstrBot 启用 qwen_speak、qwen_voice_preview、qwen_voice_control、qwen_voice_dictionary。支持“试听一下当前音色”。长期设置和词典修改仅管理员可用。"
+      }
+    }
+  },
+  "preview": {
+    "description": "音色试听",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用试听功能",
+        "type": "bool",
+        "default": true,
+        "hint": "保存配置后，从插件详情打开“音色试听”可视化页面，点击生成并直接播放或下载。不受随机概率限制；需要支持插件视图的 AstrBot 版本。也可通过自然语言要求试听。"
+      },
+      "text": {
+        "description": "试听文案",
+        "type": "text",
+        "default": "你好，这是当前音色的试听。希望这个声音自然、清晰。",
+        "hint": "可视化页面的默认文案；页面内可临时改写。受 TTS 最大字数限制，不自动翻译。"
+      },
+      "language": {
+        "description": "试听语言",
+        "type": "string",
+        "default": "auto",
+        "options": [
+          "auto",
+          "zh",
+          "en",
+          "ja"
+        ],
+        "hint": "auto 跟随音频参数中的默认朗读语言。"
+      },
+      "admin_only": {
+        "description": "聊天中仅管理员可调用自然语言试听",
+        "type": "bool",
+        "default": true,
+        "hint": "只影响聊天工具；WebUI 试听始终要求登录 AstrBot 管理面板，不受聊天会话范围限制。"
+      },
+      "cooldown_seconds": {
+        "description": "试听冷却（秒）",
+        "type": "float",
+        "default": 3.0,
+        "hint": "0～3600；WebUI 试听共用一个冷却并防止重复提交，聊天试听按用户和会话计算，与朗读共享记录。"
+      }
     }
   },
   "audio": {
     "description": "语音合成参数（按阿里云 HTTP API）",
     "type": "object",
     "items": {
-      "format": {"description": "音频格式", "type": "string", "default": "wav", "options": ["wav", "mp3", "opus"], "hint": "推荐 WAV；其他格式需平台支持。原始 PCM 缺少文件头，不作为直接发送选项。"},
-      "sample_rate": {"description": "采样率（Hz）", "type": "int", "default": 24000, "hint": "8000、12000、16000、22050、24000、44100、48000；Opus 不支持 22050 和 44100。"},
-      "volume": {"description": "音量", "type": "int", "default": 50, "hint": "0～100。"},
-      "rate": {"description": "语速", "type": "float", "default": 1.0, "hint": "0.5～2.0，1 为正常。"},
-      "pitch": {"description": "音调", "type": "float", "default": 1.0, "hint": "0.5～2.0，1 为正常。"},
-      "bit_rate": {"description": "Opus 码率（kbps）", "type": "int", "default": 32, "hint": "6～510，仅 Opus 输出时发送此参数。"},
-      "seed": {"description": "随机种子", "type": "int", "default": -1, "hint": "-1 不指定；0～65535 固定种子。同模型、文字、音色和其他参数相同时用于复现结果。"},
-      "language": {"description": "默认朗读语言", "type": "string", "default": "auto", "options": ["auto", "zh", "en", "ja"], "hint": "auto 不指定；zh 中文、en 英语、ja 日语。/说话 命令的语言优先。不是翻译功能。"},
-      "instruction": {"description": "全局情绪、方言或角色指令", "type": "text", "default": "", "hint": "长期默认指令，例：请用温柔、轻松的语气表达。单次 instruction 在对应模式下追加到此指令之后，不修改这里。留空不发送；具体支持程度取决于模型。"},
-      "enable_ssml": {"description": "指定句子及内置调用启用 SSML", "type": "bool", "default": false, "hint": "需使用支持 SSML 的模型和音色并提供正确 SSML。普通自动聊天始终关闭 SSML，避免把聊天中的尖括号当标签。"},
-      "hot_fix_json": {"description": "全局基础 hot_fix（JSON）", "type": "text", "default": "", "hint": "高级基础规则，例：{\"pronunciation\":[{\"天气\":\"tian1 qi4\"}],\"replace\":[{\"今天\":\"金天\"}]}。同词会被持久词典或单次覆盖；日语读音建议 replace 假名，不假定 pronunciation 支持罗马音。"},
-      "enable_aigc_tag": {"description": "添加 AIGC 隐性标识", "type": "bool", "default": false},
-      "aigc_propagator": {"description": "AIGC 传播者标识", "type": "string", "default": "", "hint": "仅启用 AIGC 标识时生效；留空由服务使用默认值。"},
-      "aigc_propagate_id": {"description": "AIGC 传播行为标识", "type": "string", "default": "", "hint": "通常留空，由服务为每次请求生成默认值。"}
+      "format": {
+        "description": "音频格式",
+        "type": "string",
+        "default": "wav",
+        "options": [
+          "wav",
+          "mp3",
+          "opus"
+        ],
+        "hint": "推荐 WAV；其他格式需平台支持。原始 PCM 缺少文件头，不作为直接发送选项。"
+      },
+      "sample_rate": {
+        "description": "采样率（Hz）",
+        "type": "int",
+        "default": 24000,
+        "hint": "8000、12000、16000、22050、24000、44100、48000；Opus 不支持 22050 和 44100。"
+      },
+      "volume": {
+        "description": "音量",
+        "type": "int",
+        "default": 50,
+        "hint": "0～100。"
+      },
+      "rate": {
+        "description": "语速",
+        "type": "float",
+        "default": 1.0,
+        "hint": "0.5～2.0，1 为正常。"
+      },
+      "pitch": {
+        "description": "音调",
+        "type": "float",
+        "default": 1.0,
+        "hint": "0.5～2.0，1 为正常。"
+      },
+      "bit_rate": {
+        "description": "Opus 码率（kbps）",
+        "type": "int",
+        "default": 32,
+        "hint": "6～510，仅 Opus 输出时发送此参数。"
+      },
+      "seed": {
+        "description": "随机种子",
+        "type": "int",
+        "default": -1,
+        "hint": "-1 不指定；0～65535 固定种子。同模型、文字、音色和其他参数相同时用于复现结果。"
+      },
+      "language": {
+        "description": "默认朗读语言",
+        "type": "string",
+        "default": "auto",
+        "options": [
+          "auto",
+          "zh",
+          "en",
+          "ja"
+        ],
+        "hint": "auto 不指定；zh 中文、en 英语、ja 日语。/说话 命令的语言优先。不是翻译功能。"
+      },
+      "instruction": {
+        "description": "全局情绪、方言或角色指令",
+        "type": "text",
+        "default": "",
+        "hint": "长期默认指令，例：请用温柔、轻松的语气表达。单次 instruction 在对应模式下追加到此指令之后，不修改这里。留空不发送；具体支持程度取决于模型。"
+      },
+      "enable_ssml": {
+        "description": "指定句子和试听启用 SSML",
+        "type": "bool",
+        "default": false,
+        "hint": "需使用支持 SSML 的模型和音色并提供正确 SSML。普通自动聊天始终关闭 SSML，避免把聊天中的尖括号当标签。"
+      },
+      "hot_fix_json": {
+        "description": "全局基础 hot_fix（JSON）",
+        "type": "text",
+        "default": "",
+        "hint": "高级基础规则，例：{\"pronunciation\":[{\"天气\":\"tian1 qi4\"}],\"replace\":[{\"今天\":\"金天\"}]}。同词会被持久词典或单次覆盖；日语读音建议 replace 假名，不假定 pronunciation 支持罗马音。"
+      },
+      "enable_aigc_tag": {
+        "description": "添加 AIGC 隐性标识",
+        "type": "bool",
+        "default": false
+      },
+      "aigc_propagator": {
+        "description": "AIGC 传播者标识",
+        "type": "string",
+        "default": "",
+        "hint": "仅启用 AIGC 标识时生效；留空由服务使用默认值。"
+      },
+      "aigc_propagate_id": {
+        "description": "AIGC 传播行为标识",
+        "type": "string",
+        "default": "",
+        "hint": "通常留空，由服务为每次请求生成默认值。"
+      }
     }
   }
 }

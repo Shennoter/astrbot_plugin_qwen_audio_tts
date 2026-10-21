@@ -3,6 +3,7 @@
 """Offline tests against lightweight interfaces matching the reviewed AstrBot API."""
 
 import asyncio
+import base64
 import copy
 import io
 import json
@@ -86,21 +87,6 @@ class Star:
         self.context = context
 
 
-class Provider:
-    def __init__(self, model="qwen-audio-3.1-tts-plus", key="test-key", voice=None):
-        self.model = model
-        self.provider_config = {
-            "api_key": key,
-            "dashscope_tts_voice": voice or model + "-test-voice",
-        }
-
-    def get_model(self):
-        return self.model
-
-    async def get_audio(self, text):
-        return "original:" + text
-
-
 class Event:
     def __init__(self, text="你好", kind=ResultContentType.LLM_RESULT):
         self.result = Result([Plain(text)], kind)
@@ -152,6 +138,7 @@ for name in (
     "astrbot.api.event",
     "astrbot.api.message_components",
     "astrbot.api.star",
+    "astrbot.api.web",
     "astrbot.core",
     "astrbot.core.message",
     "astrbot.core.message.message_event_result",
@@ -160,14 +147,12 @@ for name in (
     "astrbot.core.star.filter.command",
     "astrbot.core.utils",
     "astrbot.core.utils.astrbot_path",
-    "astrbot.core.provider",
-    "astrbot.core.provider.sources",
-    "astrbot.core.provider.sources.dashscope_tts",
 ):
     MODULES[name] = types.ModuleType(name)
     MODULES[name].__path__ = []
 MODULES["astrbot.api"].AstrBotConfig = Config
 MODULES["astrbot.api"].logger = logging.getLogger("plugin-test")
+MODULES["astrbot.api"].web = MODULES["astrbot.api.web"]
 MODULES["astrbot.api.event"].AstrMessageEvent = Event
 MODULES["astrbot.api.event"].filter = types.SimpleNamespace(
     on_decorating_result=decorator,
@@ -186,9 +171,6 @@ MODULES[
 ].ResultContentType = ResultContentType
 MODULES["astrbot.core.star.filter.command"].GreedyStr = GreedyStr
 MODULES["astrbot.core.utils.astrbot_path"].get_astrbot_temp_path = tempfile.gettempdir
-MODULES[
-    "astrbot.core.provider.sources.dashscope_tts"
-].ProviderDashscopeTTSAPI = Provider
 with patch.dict(sys.modules, MODULES):
     from astrbot_plugin_qwen_audio_tts import main
 
@@ -357,41 +339,63 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.path_patch.stop)
         self.config = defaults()
         self.config["connection"]["workspace"] = "ws-example"
+        self.config["connection"]["api_key"] = "test-key"
+        self.config["connection"]["voice"] = "qwen-audio-3.1-tts-plus-test-voice"
         self.config["reply"]["probability"] = 100
-        self.provider = Provider()
         self.context = types.SimpleNamespace(
-            get_provider_by_id=lambda key: self.provider,
-            get_using_tts_provider_async=AsyncMock(return_value=self.provider),
+            get_provider_by_id=Mock(
+                side_effect=AssertionError("Built-in provider lookup forbidden")
+            ),
+            get_using_tts_provider_async=AsyncMock(
+                side_effect=AssertionError("Built-in TTS lookup forbidden")
+            ),
             get_config=lambda origin: {"provider_tts_settings": {"enable": False}},
+            register_web_api=Mock(),
         )
         self.plugin = main.QwenAudioVoicePlugin(self.context, self.config)
+        self.request = types.SimpleNamespace(
+            username="admin", json=AsyncMock(return_value={})
+        )
+        self.plugin._web = types.SimpleNamespace(
+            request=self.request,
+            json_response=lambda data: (data, 200),
+            error_response=lambda message, status_code=400: (
+                {"message": message},
+                status_code,
+            ),
+        )
         self.addAsyncCleanup(self.plugin.terminate)
         self.audio = Path(self.tmp.name) / "example.wav"
         self.audio.write_bytes(wav_bytes())
 
-    async def test_lifecycle_patch_existing_instance_and_restore(self):
-        original = Provider.get_audio
-        self.plugin._speak = AsyncMock(return_value=self.audio)
-        await self.plugin.initialize()
-        await self.plugin.initialize()
-        self.assertEqual(await self.provider.get_audio("hi"), str(self.audio))
+    async def test_works_without_any_builtin_tts_provider(self):
+        with patch.object(main, "synthesize_http", return_value=wav_bytes()) as network:
+            responses = [
+                r
+                async for r in self.plugin.speak_command(
+                    Event(), "zh", GreedyStr("独立语音")
+                )
+            ]
+        self.assertIsInstance(responses[0].chain[0], Record)
+        self.context.get_provider_by_id.assert_not_called()
+        self.context.get_using_tts_provider_async.assert_not_called()
+        self.assertEqual(network.call_args.args[1], "test-key")
         self.assertEqual(
-            await Provider("qwen3-tts-flash").get_audio("hi"), "original:hi"
+            network.call_args.args[2]["model"], self.config["connection"]["model"]
         )
-        await self.plugin.terminate()
-        self.assertIs(Provider.get_audio, original)
-        self.assertEqual(await self.provider.get_audio("hi"), "original:hi")
+        self.assertEqual(
+            network.call_args.args[2]["input"]["voice"],
+            self.config["connection"]["voice"],
+        )
 
-    async def test_unload_does_not_overwrite_another_patch(self):
-        original = Provider.get_audio
-        await self.plugin.initialize()
-        replacement = AsyncMock(return_value="external")
-        Provider.get_audio = replacement
-        try:
-            await self.plugin.terminate()
-            self.assertIs(Provider.get_audio, replacement)
-        finally:
-            Provider.get_audio = original
+    async def test_shutdown_stops_new_synthesis(self):
+        await self.plugin.terminate()
+        with (
+            patch.object(main, "synthesize_http") as network,
+            self.assertRaises(client.TTSError),
+        ):
+            await self.plugin._speak("hello")
+        network.assert_not_called()
 
     async def test_probability_zero_one_hundred_and_duplicate_guard(self):
         self.plugin._speak = AsyncMock(return_value=self.audio)
@@ -452,7 +456,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             event.result.chain[1].text, "**你好** [世界](https://example.com)"
         )
-        self.assertEqual(self.plugin._speak.call_args.args[1], "你好 世界")
+        self.assertEqual(self.plugin._speak.call_args.args[0], "你好 世界")
 
     async def test_cooldown_is_per_session_and_same_session_is_serialized(self):
         self.plugin._speak = AsyncMock(return_value=self.audio)
@@ -496,7 +500,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
                 ]
                 self.assertIsInstance(responses[0].chain[0], Record)
                 self.assertFalse(event.llm)
-                self.assertEqual(self.plugin._speak.call_args.args[1], sentence)
+                self.assertEqual(self.plugin._speak.call_args.args[0], sentence)
                 self.assertEqual(self.plugin._speak.call_args.kwargs["language"], code)
 
     async def test_command_permissions_length_and_unknown_language(self):
@@ -519,12 +523,10 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertIn("超过最大字数", responses[0].chain[0].text)
 
-    async def test_network_payload_per_provider_key_and_ssml(self):
+    async def test_network_payload_plugin_key_and_ssml(self):
         self.config["audio"]["enable_ssml"] = True
         with patch.object(main, "synthesize_http", return_value=wav_bytes()) as network:
-            path = await self.plugin._speak(
-                self.provider, "hello", "en", automatic=True
-            )
+            path = await self.plugin._speak("hello", "en", automatic=True)
         self.assertTrue(path.is_file())
         args = network.call_args.args
         self.assertEqual(args[1], "test-key")
@@ -539,8 +541,8 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.config.saved)
         responses = [r async for r in self.plugin.voice_settings(event, "概率", "101")]
         self.assertIn("失败", responses[0].chain[0].text)
-        status = [r async for r in self.plugin.voice_status(event)]
-        self.assertNotIn("test-key", status[0].chain[0].text)
+        status = await self.plugin.natural_voice_control(event, "status")
+        self.assertNotIn("test-key", status)
 
     async def test_non_admin_cannot_modify_global_settings(self):
         event = Event()
@@ -571,14 +573,12 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
                     count -= 1
 
         with patch.object(main, "synthesize_http", side_effect=network):
-            await asyncio.gather(
-                *(self.plugin._speak(self.provider, "hello") for _ in range(5))
-            )
+            await asyncio.gather(*(self.plugin._speak("hello") for _ in range(5)))
         self.assertLessEqual(maximum, 2)
         await self.plugin._semaphore.acquire()
         await self.plugin._semaphore.acquire()
         with patch.object(main, "synthesize_http") as request:
-            waiting = asyncio.create_task(self.plugin._speak(self.provider, "hello"))
+            waiting = asyncio.create_task(self.plugin._speak("hello"))
             await asyncio.sleep(0)
             await self.plugin.terminate()
             self.plugin._semaphore.release()
@@ -586,6 +586,166 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(client.TTSError):
                 await waiting
             request.assert_not_called()
+
+    async def test_sid_is_only_session_identifier_command(self):
+        self.assertFalse(hasattr(self.plugin, "voice_status"))
+        schema = json.loads(
+            Path(__file__).with_name("_conf_schema.json").read_text(encoding="utf-8")
+        )
+        self.assertIn("/sid", schema["scope"]["items"]["allowed_sessions"]["hint"])
+        event = Event()
+        self.config["scope"]["allowed_sessions"] = [event.unified_msg_origin]
+        self.assertTrue(self.plugin._scope_allowed(event))
+        self.config["scope"]["allowed_sessions"] = [event.get_sender_id()]
+        self.assertFalse(self.plugin._scope_allowed(event))
+
+    async def test_service_defaults_do_not_include_secret_or_builtin_options(self):
+        schema = json.loads(
+            Path(__file__).with_name("_conf_schema.json").read_text(encoding="utf-8")
+        )
+        fields = schema["connection"]["items"]
+        self.assertTrue(fields["api_key"]["secret"])
+        self.assertEqual(fields["api_key"]["default"], "")
+        self.assertNotIn("provider_id", fields)
+        self.assertNotIn("patch_builtin", fields)
+
+    async def test_missing_credentials_fail_before_network(self):
+        for key in ("api_key", "voice", "workspace"):
+            saved = self.config["connection"][key]
+            self.config["connection"][key] = ""
+            with (
+                self.subTest(key=key),
+                patch.object(main, "synthesize_http") as network,
+                self.assertRaises(client.TTSError),
+            ):
+                await self.plugin._speak("hello")
+            network.assert_not_called()
+            self.config["connection"][key] = saved
+
+    async def test_preview_uses_current_settings_without_random_or_manual_command(self):
+        self.config["reply"]["probability"] = 0
+        self.config["command"]["enabled"] = False
+        self.config["preview"].update(text="Hello preview", language="en")
+        self.config["audio"]["rate"] = 0.75
+        with patch.object(main, "synthesize_http", return_value=wav_bytes()) as network:
+            response, code = await self.plugin.preview_generate()
+        self.assertEqual(code, 200)
+        self.assertEqual(base64.b64decode(response["audio_base64"]), wav_bytes())
+        self.assertEqual(response["mime_type"], "audio/wav")
+        self.assertFalse(hasattr(self.plugin, "preview_command"))
+        payload = network.call_args.args[2]
+        self.assertEqual(payload["input"]["text"], "Hello preview")
+        self.assertEqual(payload["input"]["language_hints"], ["en"])
+        self.assertEqual(payload["input"]["rate"], 0.75)
+
+    async def test_preview_permissions_scope_disabled_and_length_limits(self):
+        self.request.username = None
+        self.assertEqual((await self.plugin.preview_generate())[1], 401)
+        self.assertEqual((await self.plugin.preview_settings())[1], 401)
+        self.request.username = "admin"
+        self.config["preview"]["enabled"] = False
+        self.assertEqual((await self.plugin.preview_generate())[1], 403)
+        self.config["preview"]["enabled"] = True
+        self.config["preview"]["text"] = "字" * 201
+        response, code = await self.plugin.preview_generate()
+        self.assertEqual(code, 400)
+        self.assertIn("最大字数", response["message"])
+        self.assertFalse(self.plugin._preview_busy)
+
+    async def test_natural_preview_delivery_success_and_failure(self):
+        self.plugin._speak = AsyncMock(return_value=self.audio)
+        self.config["preview"]["cooldown_seconds"] = 0
+        event = Event()
+        self.assertIn("已发送", await self.plugin.natural_preview(event))
+        self.assertIsInstance(event.sent[0].chain[0], Record)
+        event.send = AsyncMock(side_effect=OSError("delivery failed"))
+        self.assertIn("发送失败", await self.plugin.natural_preview(event))
+
+    async def test_preview_uses_dictionary_and_does_not_expose_api_key(self):
+        self.config["preview"]["text"] = "名字"
+        self.config["pronunciation"]["dictionary_json"] = '{"名字":"读音"}'
+        with patch.object(main, "synthesize_http", return_value=wav_bytes()) as network:
+            response, code = await self.plugin.preview_generate()
+        self.assertEqual(
+            network.call_args.args[2]["input"]["hot_fix"]["replace"], [{"名字": "读音"}]
+        )
+        self.assertEqual(code, 200)
+        details, _ = await self.plugin.preview_settings()
+        for value in (response, details):
+            self.assertNotIn("test-key", json.dumps(value))
+            self.assertNotIn("api_key", value)
+
+    async def test_web_preview_request_is_temporary_and_validated(self):
+        before = copy.deepcopy(self.config)
+        self.request.json.return_value = {"text": "Hello", "language": "en"}
+        with patch.object(main, "synthesize_http", return_value=wav_bytes()) as network:
+            self.assertEqual((await self.plugin.preview_generate())[1], 200)
+        self.assertEqual(network.call_args.args[2]["input"]["text"], "Hello")
+        self.assertEqual(network.call_args.args[2]["input"]["language_hints"], ["en"])
+        self.assertEqual(self.config, before)
+        self.config["preview"]["cooldown_seconds"] = 0
+        for body in (
+            [],
+            {"text": 3},
+            {"text": " "},
+            {"language": "xx"},
+            {"language": []},
+            {"api_key": "injection"},
+        ):
+            self.request.json.return_value = body
+            self.assertEqual((await self.plugin.preview_generate())[1], 400, body)
+
+    async def test_web_preview_busy_cooldown_and_error_redaction(self):
+        self.plugin._preview_busy = True
+        self.assertEqual((await self.plugin.preview_generate())[1], 429)
+        self.plugin._preview_busy = False
+        self.plugin._speak = AsyncMock(side_effect=client.TTSError("test-key failed"))
+        response, code = await self.plugin.preview_generate()
+        self.assertEqual(code, 400)
+        self.assertNotIn("test-key", response["message"])
+        self.assertFalse(self.plugin._preview_busy)
+        self.assertEqual((await self.plugin.preview_generate())[1], 429)
+        self.config["preview"]["cooldown_seconds"] = 0
+        self.plugin._speak.side_effect = OSError("test-key")
+        response, code = await self.plugin.preview_generate()
+        self.assertEqual(code, 502)
+        self.assertNotIn("test-key", response["message"])
+        self.assertFalse(self.plugin._preview_busy)
+
+    async def test_preview_rechecks_busy_after_awaiting_request_body(self):
+        body_started = asyncio.Event()
+        release_body = asyncio.Event()
+
+        async def body(**kwargs):
+            body_started.set()
+            await release_body.wait()
+            return {"text": "hello", "language": "en"}
+
+        self.request.json.side_effect = body
+        self.config["preview"]["cooldown_seconds"] = 0
+        self.plugin._speak = AsyncMock(return_value=self.audio)
+        pending = asyncio.create_task(self.plugin.preview_generate())
+        await body_started.wait()
+        self.plugin._preview_busy = True
+        release_body.set()
+        self.assertEqual((await pending)[1], 429)
+        self.plugin._speak.assert_not_called()
+
+    async def test_web_api_registration_and_older_astrbot_fallback(self):
+        await self.plugin.initialize()
+        routes = self.context.register_web_api.call_args_list
+        self.assertEqual(len(routes), 2)
+        self.assertEqual(
+            routes[0].args[0], "/astrbot_plugin_qwen_audio_tts/preview/settings"
+        )
+        self.assertEqual(routes[1].args[2], ["POST"])
+        # Missing public Web API leaves normal voice features usable.
+        with patch.dict(
+            sys.modules,
+            {"astrbot.api": types.ModuleType("astrbot.api"), "astrbot.api.web": None},
+        ):
+            await self.plugin.initialize()
+        self.assertEqual(self.context.register_web_api.call_count, 2)
 
 
 if __name__ == "__main__":

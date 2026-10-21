@@ -248,10 +248,10 @@ class NaturalLanguageTests(IsolatedAsyncioTestCase):
             harness.main, "synthesize_http", return_value=harness.wav_bytes()
         ) as network:
             await self.plugin._speak(
-                self.provider, "名字", "ja", hot_fix={"replace": [{"名字": "单次"}]}
+                "名字", "ja", hot_fix={"replace": [{"名字": "单次"}]}
             )
             first = network.call_args.args[2]["input"]["hot_fix"]["replace"]
-            await self.plugin._speak(self.provider, "名字", "ja", automatic=True)
+            await self.plugin._speak("名字", "ja", automatic=True)
             second = network.call_args.args[2]["input"]["hot_fix"]["replace"]
         self.assertEqual(first, [{"名字": "单次"}])
         self.assertEqual(second, [{"名字": "词典"}])
@@ -262,7 +262,7 @@ class NaturalLanguageTests(IsolatedAsyncioTestCase):
             patch.object(harness.main, "synthesize_http") as network,
             self.assertRaisesRegex(TTSError, "预计文字长度"),
         ):
-            await self.plugin._speak(self.provider, "字")
+            await self.plugin._speak("字")
         network.assert_not_called()
 
     async def test_natural_tools_can_be_disabled(self):

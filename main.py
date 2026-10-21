@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 Shennoter
-"""AstrBot compatibility patch, probabilistic voice replies, and speech commands."""
+"""Standalone Qwen-Audio-TTS, probabilistic voice replies, and speech tools."""
 
 import asyncio
-import functools
+import base64
 import json
 import random
 import re
 import time
 import uuid
+from importlib import import_module
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
@@ -41,19 +42,18 @@ LANGUAGES = {
 MARKER = "qwen_audio_voice_handled"
 
 
-@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "Qwen Audio 语音助手", "0.2.0")
+@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "Qwen Audio 语音助手", "0.3.0")
 class QwenAudioVoicePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
-        self._original = None
-        self._wrapper = None
-        self._provider_class = None
         self._last_auto = {}
         self._last_command = {}
         self._auto_busy = set()
         self._warned = set()
         self._closed = False
+        self._preview_busy = False
+        self._web_preview_at = -1e12
         limit = number(
             config.get("connection", {}).get("max_concurrent", 2), 1, 8, "并发数", True
         )
@@ -63,68 +63,136 @@ class QwenAudioVoicePlugin(Star):
         self._sweep_at = 0
 
     async def initialize(self):
-        """Install an instance-owned wrapper for the built-in provider class."""
-        if self._provider_class and self._provider_class.get_audio is self._wrapper:
+        """Register authenticated APIs for the official plugin visual view."""
+        try:
+            web = import_module("astrbot.api.web")
+        except ImportError:
+            logger.warning(
+                "音色试听页面需要支持插件可视化视图及 astrbot.api.web 的 AstrBot 版本。"
+            )
             return
-        if not self.config.get("connection", {}).get("patch_builtin", True):
-            return
-        from astrbot.core.provider.sources.dashscope_tts import ProviderDashscopeTTSAPI
-
-        original = ProviderDashscopeTTSAPI.get_audio
-        if getattr(original, "_qwen_audio_voice_patch", False):
-            raise RuntimeError(
-                "A Qwen Audio compatibility patch is already active; disable duplicate plugin copies."
+        self._web = web
+        for endpoint, handler, methods in (
+            ("preview/settings", self.preview_settings, ["GET"]),
+            ("preview/generate", self.preview_generate, ["POST"]),
+        ):
+            self.context.register_web_api(
+                f"/astrbot_plugin_qwen_audio_tts/{endpoint}",
+                handler,
+                methods,
+                "音色试听",
             )
 
-        @functools.wraps(original)
-        async def wrapped(provider, text):
-            model = provider.get_model().lower()
-            if not self._closed and model.startswith("qwen-audio-") and "tts" in model:
-                return str(await self._speak(provider, text))
-            return await original(provider, text)
+    async def preview_settings(self):
+        """Return safe saved settings; API credentials never reach the view."""
+        web = self._web
+        if not web.request.username:
+            return web.error_response("请先登录 AstrBot 管理面板。", status_code=401)
+        connection = self.config.get("connection", {})
+        preview = self.config.get("preview", {})
+        return web.json_response(
+            {
+                "enabled": preview.get("enabled", True),
+                "text": preview.get("text", "你好，这是当前音色的试听。"),
+                "language": preview.get("language", "auto"),
+                "max_chars": self.config.get("reply", {}).get("max_chars", 200),
+                "model": connection.get("model", "qwen-audio-3.1-tts-plus"),
+                "voice": connection.get("voice", ""),
+                "configured": bool(
+                    connection.get("api_key")
+                    and connection.get("workspace")
+                    and connection.get("voice")
+                ),
+                "audio": {
+                    key: self.config.get("audio", {}).get(key)
+                    for key in (
+                        "format",
+                        "sample_rate",
+                        "volume",
+                        "rate",
+                        "pitch",
+                        "language",
+                    )
+                },
+            }
+        )
 
-        wrapped._qwen_audio_voice_patch = True
-        self._original, self._wrapper = original, wrapped
-        self._provider_class = ProviderDashscopeTTSAPI
-        ProviderDashscopeTTSAPI.get_audio = wrapped
-        logger.info("Qwen Audio HTTP compatibility patch installed.")
+    async def preview_generate(self):
+        """Generate a browser preview via the Dashboard's authenticated bridge."""
+        web = self._web
+        if not web.request.username:
+            return web.error_response("请先登录 AstrBot 管理面板。", status_code=401)
+        preview = self.config.get("preview", {})
+        if not preview.get("enabled", True):
+            return web.error_response("试听功能已关闭。", status_code=403)
+        try:
+            values = await web.request.json(default={})
+            if not isinstance(values, dict) or set(values) - {"text", "language"}:
+                raise TTSError("试听请求只支持 text 和 language。")
+            text = values.get("text", preview.get("text", ""))
+            language = values.get("language", preview.get("language", "auto"))
+            if not isinstance(text, str) or not text.strip():
+                raise TTSError("请输入要试听的文字。")
+            if language not in ("auto", "zh", "en", "ja"):
+                raise TTSError("试听语言必须是 auto、zh、en 或 ja。")
+            # Check after parsing, because awaiting the body can interleave requests.
+            if self._preview_busy:
+                return web.error_response("试听正在生成，请等待完成。", status_code=429)
+            cooldown = number(preview.get("cooldown_seconds", 3), 0, 3600, "试听冷却")
+            now = time.monotonic()
+            if now - self._web_preview_at < cooldown:
+                return web.error_response(
+                    "试听请求过于频繁，请稍后重试。", status_code=429
+                )
+            self._preview_busy = True
+            self._web_preview_at = now
+            try:
+                # auto follows the saved audio language, just like chat speech.
+                code = (
+                    self.config.get("audio", {}).get("language", "auto")
+                    if language == "auto"
+                    else language
+                )
+                path = await self._speak(text.strip(), language=code)
+                mime = {
+                    ".wav": "audio/wav",
+                    ".mp3": "audio/mpeg",
+                    ".opus": "audio/ogg",
+                }[path.suffix]
+                return web.json_response(
+                    {
+                        "audio_base64": base64.b64encode(path.read_bytes()).decode(
+                            "ascii"
+                        ),
+                        "mime_type": mime,
+                        "filename": "qwen-preview" + path.suffix,
+                    }
+                )
+            finally:
+                self._preview_busy = False
+        except TTSError as exc:
+            message = str(exc)
+            key = self.config.get("connection", {}).get("api_key", "")
+            if key:
+                message = message.replace(key, "[已隐藏]")
+            return web.error_response(message, status_code=400)
+        except Exception as exc:  # noqa: BLE001 - Never expose secrets or service traces.
+            logger.warning("Web voice preview failed (%s).", type(exc).__name__)
+            return web.error_response(
+                "试听失败，请检查插件语音服务配置和网络。", status_code=502
+            )
 
     async def terminate(self):
-        """Restore only the wrapper installed by this plugin instance."""
+        """Stop queued synthesis without modifying any built-in provider."""
         self._closed = True
-        if self._provider_class and self._provider_class.get_audio is self._wrapper:
-            self._provider_class.get_audio = self._original
         self._auto_busy.clear()
         self._last_auto.clear()
         self._last_command.clear()
-
-    async def _provider(self, event):
-        """Resolve the configured provider or the session's selected TTS provider.
-
-        Returns:
-            A configured Qwen-Audio-TTS provider instance.
-
-        Raises:
-            TTSError: If the selected provider is missing or incompatible.
-        """
-        provider_id = str(
-            self.config.get("connection", {}).get("provider_id", "")
-        ).strip()
-        if provider_id:
-            provider = self.context.get_provider_by_id(provider_id)
-        else:
-            resolver = getattr(self.context, "get_using_tts_provider_async", None)
-            if resolver:
-                provider = await resolver(event.unified_msg_origin)
-            else:
-                provider = self.context.get_using_tts_provider(event.unified_msg_origin)
-        if not provider or not hasattr(provider, "get_model"):
-            raise TTSError(
-                "找不到 TTS 提供商，请启用对应模型，并在插件设置中填写提供商 ID。"
-            )
-        if not provider.get_model().lower().startswith("qwen-audio-"):
-            raise TTSError("插件当前选择的提供商不是 Qwen-Audio-TTS，请检查提供商 ID。")
-        return provider
+        apis = getattr(self.context, "registered_web_apis", None)
+        if isinstance(apis, list):
+            apis[:] = [
+                api for api in apis if getattr(api[1], "__self__", None) is not self
+            ]
 
     def _scope_allowed(self, event):
         """Check the configured session, platform, and chat-type scope.
@@ -148,17 +216,15 @@ class QwenAudioVoicePlugin(Star):
 
     async def _speak(
         self,
-        provider,
         text,
         language=None,
         automatic=False,
         hot_fix=None,
         instruction=None,
     ):
-        """Generate an audio file using this provider's own credentials.
+        """Generate audio exclusively from the plugin's own service configuration.
 
         Args:
-            provider: The selected built-in provider instance.
             text: Original text to read.
             language: Optional target pronunciation language code.
             automatic: Whether to disable SSML for ordinary chat replies.
@@ -194,14 +260,13 @@ class QwenAudioVoicePlugin(Star):
             )
         if automatic:
             settings["enable_ssml"] = False
-        config = getattr(provider, "provider_config", {})
-        model = provider.get_model()
-        voice = str(
-            config.get("dashscope_tts_voice", getattr(provider, "voice", ""))
-        ).strip()
-        key = str(
-            config.get("api_key", getattr(provider, "chosen_api_key", ""))
-        ).strip()
+        model = str(connection.get("model", "qwen-audio-3.1-tts-plus")).strip()
+        voice = str(connection.get("voice", "")).strip()
+        key = str(connection.get("api_key", "")).strip()
+        if not key:
+            raise TTSError("请在插件的语音服务配置中填写 API Key。")
+        if not voice:
+            raise TTSError("请在插件的语音服务配置中填写对应模型的音色 ID。")
         base = workspace_base(connection.get("workspace", ""))
         timeout = number(connection.get("timeout", 60), 5, 300, "超时时间")
         payload = build_payload(model, voice, text, settings, language=language)
@@ -325,8 +390,7 @@ class QwenAudioVoicePlugin(Star):
         self._auto_busy.add(origin)
         original_chain = list(result.chain)
         try:
-            provider = await self._provider(event)
-            path = await self._speak(provider, text, automatic=True)
+            path = await self._speak(text, automatic=True)
             record = await self._record(path, text)
             if event.get_result() is not result:
                 return
@@ -362,10 +426,10 @@ class QwenAudioVoicePlugin(Star):
             yield event.plain_result("朗读失败：" + str(exc))
         except Exception as exc:  # noqa: BLE001 - Keep adapter details out of chat.
             logger.warning("Speech command failed (%s).", type(exc).__name__)
-            yield event.plain_result("朗读失败，请检查提供商、网络和插件设置。")
+            yield event.plain_result("朗读失败，请检查插件语音服务配置和网络。")
 
     async def _speech_chain(
-        self, event, text, language, hot_fix=None, instruction=None
+        self, event, text, language, hot_fix=None, instruction=None, preview=False
     ):
         """Apply shared command/tool policy and synthesize one speech message.
 
@@ -375,9 +439,11 @@ class QwenAudioVoicePlugin(Star):
         Raises:
             TTSError: If permission, scope, cooldown, or synthesis validation fails.
         """
-        command = self.config.get("command", {})
+        command = self.config.get("preview" if preview else "command", {})
         if not command.get("enabled", True):
-            raise TTSError("指定语言朗读功能已关闭。")
+            raise TTSError(
+                "试听功能已关闭。" if preview else "指定语言朗读功能已关闭。"
+            )
         if command.get("admin_only", False) and not event.is_admin():
             raise TTSError("此功能仅管理员可用。")
         if not self._scope_allowed(event):
@@ -400,12 +466,11 @@ class QwenAudioVoicePlugin(Star):
         if now - self._last_command.get(user, -1e12) < cooldown:
             raise TTSError("朗读请求过于频繁，请稍后重试。")
         self._last_command[user] = now
-        provider = await self._provider(event)
         if hot_fix is None and instruction is None:
-            path = await self._speak(provider, text, language=code)
+            path = await self._speak(text, language=code)
         else:
             path = await self._speak(
-                provider, text, language=code, hot_fix=hot_fix, instruction=instruction
+                text, language=code, hot_fix=hot_fix, instruction=instruction
             )
         record = await self._record(path, text)
         chain = [record]
@@ -483,7 +548,36 @@ class QwenAudioVoicePlugin(Star):
             return "语音未发送：" + str(exc)
         except Exception as exc:  # noqa: BLE001 - Never claim success when delivery fails.
             logger.warning("Natural speech failed (%s).", type(exc).__name__)
-            return "语音发送失败，请检查网络、适配器和插件设置。"
+            return "语音发送失败，请检查插件语音服务配置、网络和适配器。"
+
+    @filter.llm_tool(name="qwen_voice_preview")
+    async def natural_preview(self, event: AstrMessageEvent) -> str:
+        """用户明确要求试听当前音色或测试语音配置时，发送插件设置中的试听句子。
+
+        使用当前 API Key、模型、音色及音频/词典参数，不修改设置，不受随机概率限制。
+        若用户指定了要朗读的句子，应使用 qwen_speak，而不是本工具。
+
+        Returns:
+            Actual preview delivery result or a readable error.
+        """
+        if not self.config.get("natural", {}).get("enabled", True):
+            return "语音自然语言工具已关闭。"
+        event.set_extra(MARKER, True)
+        preview = self.config.get("preview", {})
+        try:
+            chain = await self._speech_chain(
+                event,
+                preview.get("text", "你好，这是当前音色的试听。"),
+                preview.get("language", "auto"),
+                preview=True,
+            )
+            await event.send(event.chain_result(chain))
+            return "试听语音已发送；使用的是插件当前保存的语音服务和音频参数。"
+        except TTSError as exc:
+            return "试听未发送：" + str(exc)
+        except Exception as exc:  # noqa: BLE001 - Never claim success on delivery failure.
+            logger.warning("Natural preview failed (%s).", type(exc).__name__)
+            return "试听发送失败，请检查插件语音服务配置、网络和适配器。"
 
     def _save_group(self, group, values):
         """Persist one configuration group, restoring memory if saving fails."""
@@ -660,31 +754,6 @@ class QwenAudioVoicePlugin(Star):
             return "持久替换词典已保存；后续是否应用以词典开关和语言范围设置为准。"
         except TTSError as exc:
             return "词典未保存：" + str(exc)
-
-    @filter.command("语音状态")
-    async def voice_status(self, event: AstrMessageEvent):
-        """Show useful state without exposing credentials."""
-        event.should_call_llm(False)
-        event.set_extra(MARKER, True)
-        reply = self.config.get("reply", {})
-        connection = self.config.get("connection", {})
-        native = (
-            self.context.get_config(event.unified_msg_origin)
-            .get("provider_tts_settings", {})
-            .get("enable", False)
-        )
-        yield event.plain_result(
-            f"随机语音：{'开启' if reply.get('enabled', True) else '关闭'}\n"
-            f"概率：{reply.get('probability', 20)}%\n最大字数：{reply.get('max_chars', 200)}\n"
-            f"提供商：{connection.get('provider_id') or '跟随会话'}\n"
-            f"单次发音模式：{self.config.get('pronunciation', {}).get('request_mode', 'hot_fix')}\n"
-            f"当前会话：{event.unified_msg_origin}\n"
-            + (
-                "提示：内置自动 TTS 已开启，插件随机转换将跳过；请关闭内置自动 TTS。"
-                if native
-                else "请关闭聊天流式输出，以便转换完整回复。"
-            )
-        )
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("语音设置")

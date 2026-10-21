@@ -255,14 +255,14 @@ def synthesize_http(base, api_key, payload, timeout=60):
         TTSError: If the service request or audio download fails.
     """
     if not api_key.strip():
-        raise TTSError("请在内置 DashScope 提供商中填写 API Key。")
+        raise TTSError("请在插件的语音服务配置中填写 API Key。")
     request = Request(
         base + "/services/audio/tts/SpeechSynthesizer",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={
             "Authorization": "Bearer " + api_key,
             "Content-Type": "application/json",
-            "User-Agent": "AstrBot-Qwen-Audio-Plugin/0.2.0",
+            "User-Agent": "AstrBot-Qwen-Audio-Plugin/0.3.0",
         },
         method="POST",
     )
