@@ -18,7 +18,11 @@ def main():
     sys.modules[package_name] = package
     spec.loader.exec_module(package)
     suite = unittest.defaultTestLoader.loadTestsFromNames(
-        [package_name + ".test_plugin", package_name + ".test_pronunciation"]
+        [
+            package_name + ".test_plugin",
+            package_name + ".test_pronunciation",
+            package_name + ".test_dashboard",
+        ]
     )
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     return 0 if result.wasSuccessful() else 1

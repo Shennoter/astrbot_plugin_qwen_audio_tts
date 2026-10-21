@@ -1,0 +1,8 @@
+{
+  "views": {
+    "preview": {
+      "title": "阿里云TTS助手",
+      "description": "分类管理全部设置、实时调参生成试听、上传 WAV 创建音色。"
+    }
+  }
+}

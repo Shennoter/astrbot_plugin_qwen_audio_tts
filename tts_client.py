@@ -54,7 +54,7 @@ def workspace_base(value):
             parsed.hostname or "",
         )
     ):
-        raise TTSError("业务空间地址无效，请填写 ws-xxx 或北京/新加坡业务空间域名。")
+        raise TTSError("业务空间地址无效，请填写北京/新加坡业务空间完整域名。")
     return f"https://{parsed.hostname}/api/v1"
 
 
@@ -244,7 +244,7 @@ def synthesize_http(base, api_key, payload, timeout=60):
 
     Args:
         base: Validated workspace API base URL.
-        api_key: The selected provider's API key.
+        api_key: The plugin configuration's API key.
         payload: Validated API request body.
         timeout: Timeout in seconds for each network operation.
 
@@ -262,7 +262,7 @@ def synthesize_http(base, api_key, payload, timeout=60):
         headers={
             "Authorization": "Bearer " + api_key,
             "Content-Type": "application/json",
-            "User-Agent": "AstrBot-Qwen-Audio-Plugin/0.3.0",
+            "User-Agent": "AstrBot-Qwen-Audio-Plugin/0.4.0",
         },
         method="POST",
     )

@@ -156,6 +156,7 @@ MODULES["astrbot.api"].web = MODULES["astrbot.api.web"]
 MODULES["astrbot.api.event"].AstrMessageEvent = Event
 MODULES["astrbot.api.event"].filter = types.SimpleNamespace(
     on_decorating_result=decorator,
+    after_message_sent=decorator,
     command=decorator,
     permission_type=decorator,
     llm_tool=decorator,
@@ -171,6 +172,9 @@ MODULES[
 ].ResultContentType = ResultContentType
 MODULES["astrbot.core.star.filter.command"].GreedyStr = GreedyStr
 MODULES["astrbot.core.utils.astrbot_path"].get_astrbot_temp_path = tempfile.gettempdir
+MODULES[
+    "astrbot.core.utils.astrbot_path"
+].get_astrbot_plugin_data_path = tempfile.gettempdir
 with patch.dict(sys.modules, MODULES):
     from astrbot_plugin_qwen_audio_tts import main
 
@@ -332,8 +336,10 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.modules_patch = patch.dict(sys.modules, MODULES)
         self.modules_patch.start()
         self.addCleanup(self.modules_patch.stop)
-        self.path_patch = patch.object(
-            main, "get_astrbot_temp_path", return_value=self.tmp.name
+        self.path_patch = patch.multiple(
+            main,
+            get_astrbot_temp_path=Mock(return_value=self.tmp.name),
+            get_astrbot_plugin_data_path=Mock(return_value=self.tmp.name),
         )
         self.path_patch.start()
         self.addCleanup(self.path_patch.stop)
@@ -734,7 +740,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
     async def test_web_api_registration_and_older_astrbot_fallback(self):
         await self.plugin.initialize()
         routes = self.context.register_web_api.call_args_list
-        self.assertEqual(len(routes), 2)
+        self.assertEqual(len(routes), 7)
         self.assertEqual(
             routes[0].args[0], "/astrbot_plugin_qwen_audio_tts/preview/settings"
         )
@@ -745,7 +751,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             {"astrbot.api": types.ModuleType("astrbot.api"), "astrbot.api.web": None},
         ):
             await self.plugin.initialize()
-        self.assertEqual(self.context.register_web_api.call_count, 2)
+        self.assertEqual(self.context.register_web_api.call_count, 7)
 
 
 if __name__ == "__main__":

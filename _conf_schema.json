@@ -11,22 +11,16 @@
         "hint": "必填。在插件内独立配置阿里云百炼 API Key，与业务空间所在地域一致；不读取或修改内置 TTS 提供商。"
       },
       "workspace": {
-        "description": "业务空间 ID 或完整域名",
+        "description": "业务空间完整域名",
         "type": "string",
         "default": "",
-        "hint": "必填。北京可直接填 ws-xxx；新加坡需填写完整业务空间域名。"
+        "hint": "填写完整域名，例如 ws-xxx.cn-beijing.maas.aliyuncs.com 或 ws-xxx.ap-southeast-1.maas.aliyuncs.com。"
       },
       "model": {
         "description": "语音模型",
         "type": "string",
         "default": "qwen-audio-3.1-tts-plus",
-        "options": [
-          "qwen-audio-3.1-tts-plus",
-          "qwen-audio-3.1-tts-flash",
-          "qwen-audio-3.0-tts-plus",
-          "qwen-audio-3.0-tts-flash"
-        ],
-        "hint": "必须与复刻音色创建时绑定的模型相同。"
+        "hint": "手动输入模型 ID，支持 qwen-audio-3.0-tts-*、qwen-audio-3.1-tts-* 等使用该 HTTP 接口的模型；音色必须与模型匹配。"
       },
       "voice": {
         "description": "音色 ID",
@@ -44,7 +38,7 @@
         "description": "最大并发合成数",
         "type": "int",
         "default": 2,
-        "hint": "1～8，修改后重载插件。"
+        "hint": "1～8，WebUI 保存后立即用于后续请求；正在执行的请求使用原限制。"
       },
       "use_file_service": {
         "description": "通过 AstrBot 文件服务发送语音",
@@ -57,6 +51,12 @@
         "type": "int",
         "default": 24,
         "hint": "1～720；合成时每小时清理一次本插件目录中的过期文件。不会清理其他文件。"
+      },
+      "save_audio": {
+        "description": "保存生成的音频到本地",
+        "type": "bool",
+        "default": false,
+        "hint": "关闭时页面试听生成后删除服务端临时文件；聊天发送使用临时文件，发送完成后清理。开启后按保留小时存放。"
       }
     }
   },
@@ -229,7 +229,7 @@
         "description": "启用试听功能",
         "type": "bool",
         "default": true,
-        "hint": "保存配置后，从插件详情打开“音色试听”可视化页面，点击生成并直接播放或下载。不受随机概率限制；需要支持插件视图的 AstrBot 版本。也可通过自然语言要求试听。"
+        "hint": "在“阿里云TTS助手”可视化页面生成并试听。实时调整使用页面草稿，不自动保存或重复生成。"
       },
       "text": {
         "description": "试听文案",
@@ -360,6 +360,63 @@
         "type": "string",
         "default": "",
         "hint": "通常留空，由服务为每次请求生成默认值。"
+      }
+    }
+  },
+  "cloning": {
+    "description": "WAV 上传与音色复刻",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用 WebUI 音色复刻",
+        "type": "bool",
+        "default": false,
+        "hint": "仅登录管理面板后可上传；创建音色调用阿里云服务并计费。上传校验本身不创建音色。"
+      },
+      "prefix": {
+        "description": "音色名称前缀",
+        "type": "string",
+        "default": "myvoice",
+        "hint": "1～10 位英文字母或数字。"
+      },
+      "language": {
+        "description": "参考音频语言",
+        "type": "string",
+        "default": "zh",
+        "options": [
+          "auto",
+          "zh",
+          "en",
+          "ja"
+        ]
+      },
+      "enable_preprocess": {
+        "description": "复刻前降噪增强",
+        "type": "bool",
+        "default": false
+      },
+      "enable_volume_normalization": {
+        "description": "复刻前音量归一化",
+        "type": "bool",
+        "default": false
+      },
+      "max_prompt_audio_length": {
+        "description": "参考音频最大使用时长（秒）",
+        "type": "float",
+        "default": 20,
+        "hint": "3～30 秒；源 WAV 要求 5～60 秒。"
+      },
+      "cooldown_seconds": {
+        "description": "创建音色冷却（秒）",
+        "type": "int",
+        "default": 60,
+        "hint": "10～3600；仅限制创建，不影响查询。"
+      },
+      "daily_limit": {
+        "description": "每天最多创建音色数",
+        "type": "int",
+        "default": 10,
+        "hint": "1～100；按 UTC 日期计数，失败或结果未知的创建也计入。"
       }
     }
   }

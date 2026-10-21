@@ -3,8 +3,8 @@
 """Standalone Qwen-Audio-TTS, probabilistic voice replies, and speech tools."""
 
 import asyncio
-import base64
 import json
+import os
 import random
 import re
 import time
@@ -18,8 +18,12 @@ from astrbot.api.message_components import At, Plain, Record, Reply
 from astrbot.api.star import Context, Star, register
 from astrbot.core.message.message_event_result import ResultContentType
 from astrbot.core.star.filter.command import GreedyStr
-from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+from astrbot.core.utils.astrbot_path import (
+    get_astrbot_plugin_data_path,
+    get_astrbot_temp_path,
+)
 
+from .panel import PanelMixin
 from .pronunciation import compose_settings, estimated_text, parse_dictionary
 from .tts_client import TTSError, build_payload, number, synthesize_http, workspace_base
 
@@ -42,8 +46,8 @@ LANGUAGES = {
 MARKER = "qwen_audio_voice_handled"
 
 
-@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "Qwen Audio 语音助手", "0.3.0")
-class QwenAudioVoicePlugin(Star):
+@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "0.4.0")
+class QwenAudioVoicePlugin(PanelMixin, Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
@@ -52,6 +56,9 @@ class QwenAudioVoicePlugin(Star):
         self._auto_busy = set()
         self._warned = set()
         self._closed = False
+        self._temporary_files = set()
+        self._temporary_tasks = {}
+        self._cleanup_tasks = set()
         self._preview_busy = False
         self._web_preview_at = -1e12
         limit = number(
@@ -60,7 +67,19 @@ class QwenAudioVoicePlugin(Star):
         self._semaphore = asyncio.Semaphore(limit)
         self.audio_dir = Path(get_astrbot_temp_path()).resolve() / "qwen_audio_voice"
         self.audio_dir.mkdir(parents=True, exist_ok=True)
+        self.retained_audio_dir = (
+            Path(get_astrbot_plugin_data_path()).resolve()
+            / "astrbot_plugin_qwen_audio_tts"
+            / "audio"
+        )
         self._sweep_at = 0
+        for old in self.audio_dir.glob("transient_*.*"):
+            if (
+                not old.is_symlink()
+                and old.is_file()
+                and time.time() - old.stat().st_mtime > 900
+            ):
+                old.unlink(missing_ok=True)
 
     async def initialize(self):
         """Register authenticated APIs for the official plugin visual view."""
@@ -72,119 +91,43 @@ class QwenAudioVoicePlugin(Star):
             )
             return
         self._web = web
+        task = asyncio.create_task(self._cleanup_enrollment_uploads())
+        self._cleanup_tasks.add(task)
+        task.add_done_callback(self._cleanup_tasks.discard)
         for endpoint, handler, methods in (
             ("preview/settings", self.preview_settings, ["GET"]),
             ("preview/generate", self.preview_generate, ["POST"]),
+            ("settings/save", self.save_settings, ["POST"]),
+            ("cloning/upload", self.cloning_upload, ["POST"]),
+            ("cloning/create", self.cloning_create, ["POST"]),
+            ("cloning/jobs", self.cloning_jobs, ["GET"]),
+            ("cloning/query", self.cloning_query, ["POST"]),
         ):
             self.context.register_web_api(
                 f"/astrbot_plugin_qwen_audio_tts/{endpoint}",
                 handler,
                 methods,
-                "音色试听",
+                "阿里云TTS助手",
             )
 
-    async def preview_settings(self):
-        """Return safe saved settings; API credentials never reach the view."""
-        web = self._web
-        if not web.request.username:
-            return web.error_response("请先登录 AstrBot 管理面板。", status_code=401)
-        connection = self.config.get("connection", {})
-        preview = self.config.get("preview", {})
-        return web.json_response(
-            {
-                "enabled": preview.get("enabled", True),
-                "text": preview.get("text", "你好，这是当前音色的试听。"),
-                "language": preview.get("language", "auto"),
-                "max_chars": self.config.get("reply", {}).get("max_chars", 200),
-                "model": connection.get("model", "qwen-audio-3.1-tts-plus"),
-                "voice": connection.get("voice", ""),
-                "configured": bool(
-                    connection.get("api_key")
-                    and connection.get("workspace")
-                    and connection.get("voice")
-                ),
-                "audio": {
-                    key: self.config.get("audio", {}).get(key)
-                    for key in (
-                        "format",
-                        "sample_rate",
-                        "volume",
-                        "rate",
-                        "pitch",
-                        "language",
-                    )
-                },
-            }
-        )
-
-    async def preview_generate(self):
-        """Generate a browser preview via the Dashboard's authenticated bridge."""
-        web = self._web
-        if not web.request.username:
-            return web.error_response("请先登录 AstrBot 管理面板。", status_code=401)
-        preview = self.config.get("preview", {})
-        if not preview.get("enabled", True):
-            return web.error_response("试听功能已关闭。", status_code=403)
-        try:
-            values = await web.request.json(default={})
-            if not isinstance(values, dict) or set(values) - {"text", "language"}:
-                raise TTSError("试听请求只支持 text 和 language。")
-            text = values.get("text", preview.get("text", ""))
-            language = values.get("language", preview.get("language", "auto"))
-            if not isinstance(text, str) or not text.strip():
-                raise TTSError("请输入要试听的文字。")
-            if language not in ("auto", "zh", "en", "ja"):
-                raise TTSError("试听语言必须是 auto、zh、en 或 ja。")
-            # Check after parsing, because awaiting the body can interleave requests.
-            if self._preview_busy:
-                return web.error_response("试听正在生成，请等待完成。", status_code=429)
-            cooldown = number(preview.get("cooldown_seconds", 3), 0, 3600, "试听冷却")
-            now = time.monotonic()
-            if now - self._web_preview_at < cooldown:
-                return web.error_response(
-                    "试听请求过于频繁，请稍后重试。", status_code=429
-                )
-            self._preview_busy = True
-            self._web_preview_at = now
-            try:
-                # auto follows the saved audio language, just like chat speech.
-                code = (
-                    self.config.get("audio", {}).get("language", "auto")
-                    if language == "auto"
-                    else language
-                )
-                path = await self._speak(text.strip(), language=code)
-                mime = {
-                    ".wav": "audio/wav",
-                    ".mp3": "audio/mpeg",
-                    ".opus": "audio/ogg",
-                }[path.suffix]
-                return web.json_response(
-                    {
-                        "audio_base64": base64.b64encode(path.read_bytes()).decode(
-                            "ascii"
-                        ),
-                        "mime_type": mime,
-                        "filename": "qwen-preview" + path.suffix,
-                    }
-                )
-            finally:
-                self._preview_busy = False
-        except TTSError as exc:
-            message = str(exc)
-            key = self.config.get("connection", {}).get("api_key", "")
-            if key:
-                message = message.replace(key, "[已隐藏]")
-            return web.error_response(message, status_code=400)
-        except Exception as exc:  # noqa: BLE001 - Never expose secrets or service traces.
-            logger.warning("Web voice preview failed (%s).", type(exc).__name__)
-            return web.error_response(
-                "试听失败，请检查插件语音服务配置和网络。", status_code=502
-            )
+    async def _cleanup_enrollment_uploads(self):
+        while not self._closed:
+            await asyncio.sleep(60)
+            manager = getattr(self, "_enrollment_manager", None)
+            if manager:
+                manager.purge()
 
     async def terminate(self):
         """Stop queued synthesis without modifying any built-in provider."""
         self._closed = True
+        if getattr(self, "_enrollment_manager", None):
+            await self._enrollment_manager.close()
+        for task in self._cleanup_tasks:
+            task.cancel()
+        if self._cleanup_tasks:
+            await asyncio.gather(*self._cleanup_tasks, return_exceptions=True)
+        for path in list(self._temporary_files):
+            self._discard_temporary(path)
         self._auto_busy.clear()
         self._last_auto.clear()
         self._last_command.clear()
@@ -221,6 +164,7 @@ class QwenAudioVoicePlugin(Star):
         automatic=False,
         hot_fix=None,
         instruction=None,
+        config_snapshot=None,
     ):
         """Generate audio exclusively from the plugin's own service configuration.
 
@@ -230,6 +174,7 @@ class QwenAudioVoicePlugin(Star):
             automatic: Whether to disable SSML for ordinary chat replies.
             hot_fix: Request-local pronunciation rules, never saved to configuration.
             instruction: Request-local voice instruction, never saved to configuration.
+            config_snapshot: Optional isolated dashboard draft for this request.
 
         Returns:
             Path to the generated audio file.
@@ -239,16 +184,17 @@ class QwenAudioVoicePlugin(Star):
         """
         if self._closed:
             raise TTSError("插件已停用。")
-        connection = self.config.get("connection", {})
+        cfg = config_snapshot if config_snapshot is not None else self.config
+        connection = cfg.get("connection", {})
         settings = compose_settings(
-            self.config.get("audio", {}),
-            self.config.get("pronunciation", {}),
+            cfg.get("audio", {}),
+            cfg.get("pronunciation", {}),
             language=language,
             hot_fix=hot_fix,
             instruction=instruction,
         )
         max_chars = number(
-            self.config.get("reply", {}).get("max_chars", 200),
+            cfg.get("reply", {}).get("max_chars", 200),
             1,
             10000,
             "最大字数",
@@ -269,6 +215,7 @@ class QwenAudioVoicePlugin(Star):
             raise TTSError("请在插件的语音服务配置中填写对应模型的音色 ID。")
         base = workspace_base(connection.get("workspace", ""))
         timeout = number(connection.get("timeout", 60), 5, 300, "超时时间")
+        keep_hours = number(connection.get("keep_hours", 24), 1, 720, "文件保留小时")
         payload = build_payload(model, voice, text, settings, language=language)
         if len(estimated_text(text, payload["input"].get("hot_fix", {}))) > max_chars:
             raise TTSError(
@@ -280,10 +227,22 @@ class QwenAudioVoicePlugin(Star):
             content = await asyncio.to_thread(
                 synthesize_http, base, key, payload, timeout
             )
-        path = (
-            self.audio_dir / f"speech_{uuid.uuid4().hex}.{payload['input']['format']}"
-        )
-        path.write_bytes(content)
+        if self._closed:
+            raise TTSError("插件已停用。")
+        prefix = "speech" if connection.get("save_audio", False) else "transient"
+        output_dir = self.retained_audio_dir if prefix == "speech" else self.audio_dir
+        output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = output_dir / f"{prefix}_{uuid.uuid4().hex}.{payload['input']['format']}"
+        with os.fdopen(
+            os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb"
+        ) as writer:
+            writer.write(content)
+        if prefix == "transient":
+            self._temporary_files.add(path)
+            task = asyncio.create_task(self._expire_temporary(path))
+            self._cleanup_tasks.add(task)
+            self._temporary_tasks[path] = task
+            task.add_done_callback(self._cleanup_tasks.discard)
         now = time.time()
         if now >= self._sweep_at:
             self._sweep_at = now + 3600
@@ -298,11 +257,11 @@ class QwenAudioVoicePlugin(Star):
                 for key, used in self._last_command.items()
                 if monotonic_now - used < 3600
             }
-            keep_hours = number(
-                connection.get("keep_hours", 24), 1, 720, "文件保留小时"
-            )
             # Delete only files generated in this plugin's own directory.
-            for old in self.audio_dir.glob("speech_*.*"):
+            for old in (
+                *self.audio_dir.glob("speech_*.*"),
+                *self.retained_audio_dir.glob("speech_*.*"),
+            ):
                 if old.suffix not in (".wav", ".mp3", ".opus") or old.is_symlink():
                     continue
                 try:
@@ -325,6 +284,44 @@ class QwenAudioVoicePlugin(Star):
             record = Record.fromURL(url)
             record.text = text
         return record
+
+    def _discard_temporary(self, path):
+        if path in self._temporary_files:
+            try:
+                path.unlink(missing_ok=True)
+                self._temporary_files.discard(path)
+                task = self._temporary_tasks.pop(path, None)
+                if task and task is not asyncio.current_task():
+                    task.cancel()
+            except OSError:
+                logger.warning("Unable to remove temporary TTS audio.")
+
+    async def _expire_temporary(self, path):
+        await asyncio.sleep(900)
+        self._discard_temporary(path)
+
+    def _track_temporary(self, event, path):
+        if path in self._temporary_files:
+            paths = event.get_extra("qwen_audio_temporary_paths", [])
+            event.set_extra("qwen_audio_temporary_paths", [*paths, path])
+
+    @filter.after_message_sent()
+    async def cleanup_sent_audio(self, event: AstrMessageEvent):
+        paths = event.get_extra("qwen_audio_temporary_paths", [])
+        event.set_extra("qwen_audio_temporary_paths", [])
+        if paths and self.config.get("connection", {}).get("use_file_service", False):
+            # Remote adapters can fetch the file-service URL after acknowledging send.
+            async def later():
+                await asyncio.sleep(60)
+                for path in paths:
+                    self._discard_temporary(path)
+
+            task = asyncio.create_task(later())
+            self._cleanup_tasks.add(task)
+            task.add_done_callback(self._cleanup_tasks.discard)
+        else:
+            for path in paths:
+                self._discard_temporary(path)
 
     @filter.on_decorating_result()
     async def random_voice_reply(self, event: AstrMessageEvent):
@@ -391,6 +388,7 @@ class QwenAudioVoicePlugin(Star):
         original_chain = list(result.chain)
         try:
             path = await self._speak(text, automatic=True)
+            self._track_temporary(event, path)
             record = await self._record(path, text)
             if event.get_result() is not result:
                 return
@@ -472,6 +470,7 @@ class QwenAudioVoicePlugin(Star):
             path = await self._speak(
                 text, language=code, hot_fix=hot_fix, instruction=instruction
             )
+        self._track_temporary(event, path)
         record = await self._record(path, text)
         chain = [record]
         if self.config.get("reply", {}).get("dual_output", False):
@@ -542,7 +541,10 @@ class QwenAudioVoicePlugin(Star):
             chain = await self._speech_chain(
                 event, text, language, hot_fix_json or None, instruction or None
             )
-            await event.send(event.chain_result(chain))
+            try:
+                await event.send(event.chain_result(chain))
+            finally:
+                await self.cleanup_sent_audio(event)
             return "语音已发送。单次参数未写入词典；不要再次合成或重复发送这段语音。"
         except TTSError as exc:
             return "语音未发送：" + str(exc)
@@ -571,7 +573,10 @@ class QwenAudioVoicePlugin(Star):
                 preview.get("language", "auto"),
                 preview=True,
             )
-            await event.send(event.chain_result(chain))
+            try:
+                await event.send(event.chain_result(chain))
+            finally:
+                await self.cleanup_sent_audio(event)
             return "试听语音已发送；使用的是插件当前保存的语音服务和音频参数。"
         except TTSError as exc:
             return "试听未发送：" + str(exc)
