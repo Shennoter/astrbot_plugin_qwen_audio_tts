@@ -1,0 +1,6 @@
+name: astrbot_plugin_qwen_audio_tts
+display_name: Qwen Audio 语音助手
+desc: Qwen-Audio-TTS 兼容修复、概率语音、中英日朗读、单次读音、持久替换词典及自然语言工具。
+version: v0.2.0
+author: Shennoter
+repo: https://github.com/Shennoter/astrbot_plugin_qwen_audio_tts
