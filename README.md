@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="logo.png" alt="阿里云TTS助手" width="128" height="128" />
+
 # 阿里云TTS助手
 
 基于阿里云百炼语音服务的 AstrBot 插件，支持音色创建、文字朗读、随机语音回复与在线试听。
@@ -21,6 +23,35 @@
 - **随机语音回复**：按概率将 AI 回复转为语音，可同时发送原文，并设置会话范围与冷却。
 - **朗读与发音控制**：支持固定、混合、动态参数模式，单句语气指导、分段停顿和分语言持久词典。
 - **翻译模式**：调用 AstrBot 已登记的聊天模型，将文本翻译成汉语、日语或英语后朗读。
+
+## 支持平台与分类
+
+分类标签：**语音合成 · 音色复刻 · AI工具 · 多媒体**。
+
+插件通过 AstrBot 通用 `Record` 组件发送音频，不依赖某一家聊天平台。以下声明依据 2026-10-22 检查的 AstrBot 官方适配器源码与本插件调用方式推断，尚未逐平台进行真实账号联调；使用较旧 AstrBot 版本时请核对对应适配器实现。
+
+| 平台 | `support_platforms` 标识 | 使用条件与表现 |
+| --- | --- | --- |
+| QQ / OneBot v11 | `aiocqhttp` | OneBot 实现须支持发送 record；音频转码由适配器或协议端处理 |
+| QQ 官方机器人 | `qq_official`、`qq_official_webhook` | 依赖官方接口的语音消息能力与权限，不能据此保证所有频道场景；适配器执行 Silk 转码 |
+| Telegram | `telegram` | 适配器发送语音，并提供音频格式回退处理 |
+| Discord | `discord` | 适配器发送音频/语音消息；不是在语音频道中实时播报 |
+| 飞书 / Lark | `lark` | 适配器将音频转为 Opus，需要可用的转码工具及上传权限 |
+| 钉钉 | `dingtalk` | 适配器转为 OGG/AMR，需媒体上传权限与转码能力 |
+| 企业微信 | `wecom` | 适配器转为 AMR 后上传语音，需相应应用权限与转码能力 |
+| 企业微信智能机器人 | `wecom_ai_bot` | 需配置可发送语音的群机器人 Webhook；仅文本流式连接不足以发送语音 |
+| 微信公众号 | `weixin_official_account` | 适配器转为 AMR，受公众号接口权限和消息发送规则限制 |
+| Slack | `slack` | 以音频文件上传，需文件上传权限 |
+| KOOK | `kook` | 以音频卡片发送，需资源上传权限 |
+| Satori | `satori` | 适配器输出 audio 元素，最终是否播放取决于所连接的协议实现；使用 WAV |
+| LINE | `line` | 音频须可通过公网 HTTPS 访问，建议 MP3；需配置 AstrBot 文件服务和可访问的回调地址 |
+| Mattermost | `mattermost` | 以音频附件上传，需文件上传权限 |
+
+AstrBot 内置 WebChat 的适配器也支持音频播放，建议使用默认 WAV；它不在官方文档列出的 `support_platforms` 键列表中，因此未作为市场平台标签填写。WebUI“生成与试听”独立于聊天平台。
+
+未声明的平台包括 `weixin_oc`（本次检查的发送分支未处理 Record）、`misskey`（未确认 Record 发送实现）及未核实的外部适配器。不同平台对格式、时长和大小的限制仍以其接口为准，平台标签表示具备对应代码路径，不表示所有格式和会话类型均已实测。
+
+平台字段及图标遵循 [AstrBot 插件开发规范](https://docs.astrbot.app/dev/star/plugin-new.html)，分类字段遵循[插件发布规范](https://docs.astrbot.app/dev/star/plugin-publish.html)。
 
 ## 环境要求
 

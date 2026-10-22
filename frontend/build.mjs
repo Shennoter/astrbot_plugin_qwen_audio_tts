@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Shennoter
 import { build } from "esbuild";
-import { readFile, writeFile, readdir, stat } from "node:fs/promises";
+import { readFile, writeFile, readdir, stat, copyFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const output = resolve(root, "../views/preview/app.js");
+await copyFile(
+  resolve(root, "../logo.png"),
+  resolve(root, "../views/preview/logo.png"),
+);
 const result = await build({
   absWorkingDir: root,
   entryPoints: ["src/main.jsx"],

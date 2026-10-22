@@ -4,3 +4,24 @@ desc: 独立配置 Qwen-Audio-TTS，支持音色保存与模型成对切换、MU
 version: v1.0.0
 author: Shennoter
 repo: https://github.com/Shennoter/astrbot_plugin_qwen_audio_tts
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - qq_official_webhook
+  - telegram
+  - discord
+  - lark
+  - dingtalk
+  - wecom
+  - wecom_ai_bot
+  - weixin_official_account
+  - slack
+  - kook
+  - satori
+  - line
+  - mattermost
+tags:
+  - 语音合成
+  - 音色复刻
+  - AI工具
+  - 多媒体

@@ -773,7 +773,12 @@ function App() {
         spacing={1.5}
         sx={{ alignItems: "center", mb: 4, mt: 1 }}
       >
-        <Avatar variant="rounded" sx={{ bgcolor: "#E91E63" }}>
+        <Avatar
+          variant="rounded"
+          src="./logo.png"
+          alt="阿里云TTS助手"
+          sx={{ bgcolor: "#E91E63" }}
+        >
           <GraphicEqIcon />
         </Avatar>
         <Box>
