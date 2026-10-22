@@ -78,6 +78,90 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(value["config"]["connection"]["save_audio"])
 
+    async def save_profile_draft(self, profile_id, name, config, source=None):
+        self.request.json.return_value = {
+            "config": config, "revision": settings.revision(self.config),
+            "profile_id": profile_id, "profile_name": name,
+            "source_profile_id": source,
+        }
+        return await self.plugin.save_settings()
+
+    async def test_profiles_restore_every_setting_and_isolate_credentials(self):
+        original = settings.public_settings(self.config)["config"]
+        response, status = await self.save_profile_draft("default", "配置 A", original)
+        self.assertEqual(status, 200)
+        profile_a = settings.profile_config(self.config)
+        second = copy.deepcopy(response["config"])
+        second["connection"].update(api_key="profile-b-secret", voice="voice-b", max_concurrent=3)
+        second["audio"]["rate"] = 1.4
+        second["pronunciation"]["dictionary_json"] = '{"测试":"测式"}'
+        second["reply"]["probability"] = 12
+        second["scope"]["allowed_sessions"] = ["session-b"]
+        response, status = await self.save_profile_draft("", "配置 B", second)
+        self.assertEqual(status, 200)
+        identity = response["config"]["profiles"]["active_id"]
+        self.assertNotIn("profile-b-secret", json.dumps(response))
+        self.assertNotIn("test-key", json.dumps(response))
+        public_a = next(p for p in response["profiles"] if p["id"] == "default")
+        response, status = await self.save_profile_draft("default", "配置 A", public_a["config"], "default")
+        self.assertEqual(status, 200)
+        self.assertEqual(settings.profile_config(self.config), profile_a)
+        self.assertEqual(self.plugin._semaphore._value, profile_a["connection"]["max_concurrent"])
+        # Reloaded browser restores B, including its dictionary and its own secret.
+        reloaded = settings.public_settings(h.Config(copy.deepcopy(self.config)))
+        public_b = next(p for p in reloaded["profiles"] if p["id"] == identity)
+        response, status = await self.save_profile_draft(identity, "配置 B 改名", public_b["config"], identity)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.config["connection"]["api_key"], "profile-b-secret")
+        self.assertEqual(self.config["pronunciation"]["dictionary_json"], second["pronunciation"]["dictionary_json"])
+        self.assertEqual(self.config["audio"]["rate"], 1.4)
+        self.assertEqual(self.config["scope"], second["scope"])
+        self.assertEqual(len(response["profiles"]), 2)
+
+    async def test_profile_save_failure_and_duplicate_name_are_atomic(self):
+        public = settings.public_settings(self.config)
+        response, status = await self.save_profile_draft("default", "配置 A", public["config"])
+        self.assertEqual(status, 200)
+        previous = copy.deepcopy(dict(self.config))
+        _, status = await self.save_profile_draft("", "配置 A", response["config"])
+        self.assertEqual(status, 400)
+        self.assertEqual(dict(self.config), previous)
+        self.config.save_config = Mock(side_effect=OSError("disk full"))
+        _, status = await self.save_profile_draft("", "配置 B", response["config"])
+        self.assertEqual(status, 400)
+        self.assertEqual(dict(self.config), previous)
+
+    async def test_chat_dictionary_changes_update_active_profile(self):
+        _, status = await self.save_profile_draft(
+            "default", "当前配置", settings.public_settings(self.config)["config"]
+        )
+        self.assertEqual(status, 200)
+        event = h.Event()
+        event.admin = True
+        result = await self.plugin.natural_dictionary(event, "set", "名字", "なまえ")
+        self.assertIn("已保存", result)
+        entry = settings.profile_entries(self.config)[0]
+        self.assertEqual(json.loads(entry["config"]["pronunciation"]["dictionary_json"]), {"名字": "なまえ"})
+        previous = copy.deepcopy(dict(self.config))
+        self.config.save_config = Mock(side_effect=OSError("disk full"))
+        result = await self.plugin.natural_dictionary(event, "set", "其他", "读音")
+        self.assertIn("未保存", result)
+        self.assertEqual(dict(self.config), previous)
+
+    async def test_profile_legacy_migration_and_explicit_key_clear(self):
+        self.config["voice_library"] = {"entries_json": json.dumps([
+            {"name": "旧音色", "model": "qwen-audio-3.0-tts-flash", "voice": "legacy-voice"},
+            {"name": "其他空间", "model": "qwen-audio-3.0-tts-flash", "voice": "other-voice", "workspace": "ws-other.cn-beijing.maas.aliyuncs.com"},
+        ])}
+        entries = settings.profile_entries(self.config)
+        self.assertEqual(entries[1]["config"]["connection"]["api_key"], "test-key")
+        self.assertEqual(entries[2]["config"]["connection"]["api_key"], "")
+        public = settings.public_settings(self.config)
+        selected = public["profiles"][1]
+        candidate = settings.validate_draft(self.config, selected["config"], True, selected["id"])
+        self.assertEqual(candidate["connection"]["api_key"], "")
+        self.assertEqual(candidate["connection"]["voice"], "legacy-voice")
+
     async def test_saved_voices_persist_and_switch_model_voice_together(self):
         pair = {
             "name": "旧版测试音色",

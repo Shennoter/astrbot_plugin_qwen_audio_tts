@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import re
+import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -107,11 +108,17 @@ def public_settings(config):
     value["preview"]["enabled"] = True
     key_set = bool(value["connection"]["api_key"])
     value["connection"]["api_key"] = ""
+    profiles = profile_entries(config)
+    for entry in profiles:
+        entry["api_key_set"] = bool(entry["config"]["connection"]["api_key"])
+        entry["config"]["connection"]["api_key"] = ""
+    value["profiles"]["entries_json"] = "[]"
     return {
         "config": value,
         "schema": {k: v for k, v in SCHEMA.items() if k != "preview"},
         "revision": revision(config),
         "api_key_set": key_set,
+        "profiles": profiles,
     }
 
 
@@ -182,13 +189,18 @@ def saved_voice_connection(config, name):
     return connection
 
 
-def validate_draft(current, patch, clear_api_key=False):
+def validate_draft(current, patch, clear_api_key=False, source_profile_id=None):
     """Apply only schema fields, with strict types, bounds and semantic checks."""
     if not isinstance(patch, dict) or set(patch) - set(SCHEMA):
         raise TTSError("设置包含未知分类或格式错误。")
     if len(json.dumps(patch, ensure_ascii=False).encode()) > 128 * 1024:
         raise TTSError("设置内容超过 128 KiB 限制。")
     result = snapshot(current)
+    if source_profile_id is not None:
+        matches = [p for p in profile_entries(current) if p["id"] == source_profile_id]
+        if len(matches) != 1:
+            raise TTSError("配置文件不存在，请重新加载。")
+        result.update(copy.deepcopy(matches[0]["config"]))
     for group, values in patch.items():
         fields = SCHEMA[group]["items"]
         if not isinstance(values, dict) or set(values) - set(fields):
@@ -251,3 +263,75 @@ def validate_draft(current, patch, clear_api_key=False):
     if not re.fullmatch(r"[A-Za-z0-9]{1,10}", result["cloning"]["prefix"]):
         raise TTSError("音色前缀需为 1～10 位英文字母或数字。")
     return result
+
+
+def profile_config(config):
+    """A profile owns every setting, excluding the shared profile/legacy indexes."""
+    return {
+        k: v for k, v in snapshot(config).items()
+        if k not in ("profiles", "voice_library")
+    }
+
+
+def profile_entries(config):
+    cfg = snapshot(config)
+    raw = cfg["profiles"]["entries_json"]
+    try:
+        entries = json.loads(raw)
+    except (ValueError, TypeError):
+        raise TTSError("配置文件列表格式错误。") from None
+    if (
+        not isinstance(entries, list) or len(entries) > 200
+        or len(raw.encode("utf8")) > 8 * 1024 * 1024
+    ):
+        raise TTSError("配置文件最多 200 项，总大小不能超过 8 MiB。")
+    seen = set()
+    for entry in entries:
+        if (
+            not isinstance(entry, dict) or set(entry) != {"id", "name", "config"}
+            or not isinstance(entry["id"], str) or not entry["id"]
+            or entry["id"] in seen or not isinstance(entry["name"], str)
+            or not 1 <= len(entry["name"].strip()) <= 80
+            or not isinstance(entry["config"], dict)
+            or set(entry["config"]) - set(profile_config(cfg))
+        ):
+            raise TTSError("配置文件的标识、名称或设置格式错误。")
+        seen.add(entry["id"])
+        # Schema projection also supplies fields added by later plugin versions.
+        entry["config"] = profile_config(entry["config"])
+    if entries:
+        return entries
+    entries = [{"id": "default", "name": "默认配置", "config": profile_config(cfg)}]
+    for index, voice in enumerate(parse_saved_voices(cfg["voice_library"]["entries_json"])):
+        migrated = profile_config(cfg)
+        connection = migrated["connection"]
+        connection.update(model=voice["model"], voice=voice["voice"])
+        if voice["workspace"] and voice["workspace"] != connection["workspace"]:
+            connection.update(workspace=voice["workspace"], api_key="")
+        entries.append(
+            {"id": f"legacy-{index}", "name": voice["name"], "config": migrated}
+        )
+    return entries
+
+
+def save_profile(current, candidate, profile_id, name):
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
+        raise TTSError("配置文件名称需为 1～80 字。")
+    if not isinstance(profile_id, str):
+        raise TTSError("配置文件标识格式错误。")
+    entries = profile_entries(current)
+    if profile_id and not any(p["id"] == profile_id for p in entries):
+        raise TTSError("配置文件不存在，请重新加载。")
+    if any(p["name"] == name.strip() and p["id"] != profile_id for p in entries):
+        raise TTSError("配置文件名称已存在，请使用其他名称。")
+    identity = profile_id or uuid.uuid4().hex
+    entry = {"id": identity, "name": name.strip(), "config": profile_config(candidate)}
+    entries = [entry if p["id"] == identity else p for p in entries]
+    if not profile_id:
+        entries.append(entry)
+    candidate["profiles"] = {
+        "active_id": identity,
+        "entries_json": json.dumps(entries, ensure_ascii=False),
+    }
+    profile_entries(candidate)
+    return candidate

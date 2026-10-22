@@ -397,14 +397,31 @@
     }
   },
   "voice_library": {
-    "description": "已保存音色",
+    "description": "旧音色记录（兼容）",
     "type": "object",
     "items": {
       "entries_json": {
         "description": "音色列表（模型与音色配对）",
         "type": "text",
         "default": "[]",
-        "hint": "推荐在 WebUI 的“已保存音色”页面管理。JSON 列表每项包含 name、model、voice，可选 workspace 完整域名；最多 100 项。不保存 API Key。"
+        "hint": "旧版本音色记录会自动出现在服务与音色的配置文件列表中。"
+      }
+    }
+  },
+  "profiles": {
+    "description": "统一配置文件",
+    "type": "object",
+    "items": {
+      "active_id": {
+        "description": "当前配置文件",
+        "type": "string",
+        "default": "default"
+      },
+      "entries_json": {
+        "description": "完整配置文件列表",
+        "type": "text",
+        "default": "[]",
+        "hint": "由服务与音色中的配置文件选择框和保存全部设置管理，包含全部设置和凭据，请勿公开。"
       }
     }
   }

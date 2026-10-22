@@ -13,7 +13,7 @@ from astrbot.api import logger
 
 from .delivery import parse_plan
 from .enrollment import MAX_AUDIO, MAX_MULTIPART, EnrollmentManager, validate_wav
-from .settings import public_settings, revision, snapshot, validate_draft
+from .settings import public_settings, revision, snapshot, validate_draft, save_profile
 from .tts_client import TTSError
 
 
@@ -212,6 +212,9 @@ class PanelMixin:
                 "config",
                 "revision",
                 "clear_api_key",
+                "source_profile_id",
+                "profile_id",
+                "profile_name",
             }:
                 raise TTSError("设置请求格式错误。")
             if body.get("revision") != revision(self.config):
@@ -219,8 +222,13 @@ class PanelMixin:
                     "设置已被其他页面或聊天修改，请重新加载后再保存。", status_code=409
                 )
             candidate = validate_draft(
-                self.config, body.get("config"), body.get("clear_api_key", False)
+                self.config, body.get("config"), body.get("clear_api_key", False),
+                body.get("source_profile_id")
             )
+            # The shared index is server-owned; never trust a redacted browser copy.
+            candidate["profiles"] = snapshot(self.config)["profiles"]
+            if "profile_id" in body:
+                candidate = save_profile(self.config, candidate, body["profile_id"], body.get("profile_name"))
             previous = copy.deepcopy(dict(self.config))
             old_limit = previous.get("connection", {}).get("max_concurrent", 2)
             self.config.clear()
@@ -251,6 +259,7 @@ class PanelMixin:
                 "language",
                 "config",
                 "clear_api_key",
+                "source_profile_id",
                 "delivery_instruction",
                 "delivery_plan",
             }:
@@ -258,7 +267,8 @@ class PanelMixin:
             cfg = snapshot(self.config)
             if "config" in body:
                 cfg = validate_draft(
-                    cfg, body["config"], body.get("clear_api_key", False)
+                    cfg, body["config"], body.get("clear_api_key", False),
+                    body.get("source_profile_id")
                 )
             keys.append(cfg["connection"]["api_key"])
             preview = cfg["preview"]

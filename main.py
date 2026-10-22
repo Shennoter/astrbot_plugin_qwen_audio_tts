@@ -3,6 +3,7 @@
 """Standalone Qwen-Audio-TTS, probabilistic voice replies, and speech tools."""
 
 import asyncio
+import copy
 import json
 import os
 import random
@@ -32,7 +33,7 @@ from .delivery import (
 )
 from .panel import PanelMixin
 from .pronunciation import compose_settings, estimated_text, parse_dictionary
-from .settings import parse_saved_voices, saved_voice_connection, snapshot
+from .settings import parse_saved_voices, saved_voice_connection, snapshot, profile_entries, save_profile
 from .tts_client import TTSError, build_payload, number, synthesize_http, workspace_base
 
 LANGUAGES = {
@@ -54,7 +55,7 @@ LANGUAGES = {
 MARKER = "qwen_audio_voice_handled"
 
 
-@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "0.7.0")
+@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "0.8.0")
 class QwenAudioVoicePlugin(PanelMixin, Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -680,15 +681,20 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
 
     def _save_group(self, group, values):
         """Persist one configuration group, restoring memory if saving fails."""
-        previous = self.config.get(group)
-        self.config[group] = values
+        previous = copy.deepcopy(dict(self.config))
         try:
+            candidate = copy.deepcopy(previous)
+            candidate[group] = values
+            library = previous.get("profiles", {})
+            if library.get("entries_json", "[]") != "[]":
+                active = next(p for p in profile_entries(previous) if p["id"] == library["active_id"])
+                candidate = save_profile(previous, candidate, active["id"], active["name"])
+            self.config.clear()
+            self.config.update(candidate)
             self.config.save_config()
         except Exception:  # noqa: BLE001 - Restore the group on every persistence failure.
-            if previous is None:
-                self.config.pop(group, None)
-            else:
-                self.config[group] = previous
+            self.config.clear()
+            self.config.update(previous)
             raise TTSError("保存设置失败，已恢复内存中的原设置。") from None
 
     def _update_setting(self, name, value):

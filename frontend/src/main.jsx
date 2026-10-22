@@ -75,12 +75,6 @@ const pages = [
     description: "用一段清晰录音创建专属音色。",
   },
   {
-    id: "voices",
-    title: "已保存音色",
-    icon: SettingsVoiceIcon,
-    description: "保存模型与音色配对，随时切换。",
-  },
-  {
     id: "connection",
     title: "服务与音色",
     icon: SettingsVoiceIcon,
@@ -548,7 +542,10 @@ function App() {
   });
   const [discardDialog, setDiscardDialog] = useState(false);
   const [guide, setGuide] = useState("");
-  const [voiceName, setVoiceName] = useState("");
+  const [profileName, setProfileName] = useState("");
+  const [profileId, setProfileId] = useState("");
+  const [sourceProfileId, setSourceProfileId] = useState(null);
+  const [pendingProfile, setPendingProfile] = useState(null);
   const [segments, setSegments] = useState([]);
   const [result, setResult] = useState(null);
   const [file, setFile] = useState(null);
@@ -616,6 +613,12 @@ function App() {
     setData((old) => ({ ...old, ...next }));
     setDraft(clone(next.config));
     setRevision(next.revision);
+    const active =
+      next.profiles.find((p) => p.id === next.config.profiles.active_id) ||
+      next.profiles[0];
+    setProfileId(active.id);
+    setSourceProfileId(null);
+    setProfileName(active.name);
     setClearKey(false);
     setDirty(false);
   };
@@ -693,7 +696,10 @@ function App() {
       const next = await bridge.apiPost("settings/save", {
         config,
         revision,
+        profile_id: profileId,
+        profile_name: profileName,
         clear_api_key: clearKey,
+        source_profile_id: sourceProfileId,
       });
       applyData(next);
       notify("全部设置已保存，后续聊天使用新设置。", "success");
@@ -735,6 +741,7 @@ function App() {
         language: config.preview.language,
         config,
         clear_api_key: clearKey,
+        source_profile_id: sourceProfileId,
         delivery_instruction: guide,
         ...(plan ? { delivery_plan: plan } : {}),
       });
@@ -834,229 +841,69 @@ function App() {
       setQuerying(null);
     }
   }
-  let savedVoices = [],
-    voiceLibraryError = "";
-  try {
-    savedVoices = JSON.parse(draft?.voice_library?.entries_json || "[]");
-    if (
-      !Array.isArray(savedVoices) ||
-      savedVoices.length > 100 ||
-      savedVoices.some(
-        (v) =>
-          !v ||
-          ["name", "model", "voice"].some((k) => typeof v[k] !== "string") ||
-          (v.workspace !== undefined && typeof v.workspace !== "string"),
-      )
-    )
-      throw Error("invalid");
-  } catch {
-    savedVoices = [];
-    voiceLibraryError =
-      "音色列表格式错误，请在插件原生设置中修正已保存音色 JSON。";
-  }
-  const normalizeWorkspace = (value) =>
-    (value || "")
-      .trim()
-      .replace(/^https:\/\//, "")
-      .replace(/\/$/, "");
-  const writeVoices = (values) =>
-    change("voice_library", "entries_json", JSON.stringify(values, null, 2));
-  function addSavedVoice(value) {
-    if (voiceLibraryError) return notify(voiceLibraryError, "error");
-    const entry = {
-      name: value.name.trim(),
-      model: value.model.trim(),
-      voice: value.voice.trim(),
-      workspace: normalizeWorkspace(value.workspace),
-    };
-    if (!entry.name || entry.name.length > 80 || !entry.model || !entry.voice)
-      return notify("请填写名称、模型 ID 和音色 ID；名称最多 80 字。", "error");
-    const index = savedVoices.findIndex(
-      (v) =>
-        v.model === entry.model &&
-        v.voice === entry.voice &&
-        normalizeWorkspace(v.workspace) === entry.workspace,
-    );
-    if (index < 0 && savedVoices.length >= 100)
-      return notify("最多保存 100 个音色。", "error");
-    writeVoices(
-      index < 0
-        ? [...savedVoices, entry]
-        : savedVoices.map((v, i) => (i === index ? entry : v)),
-    );
-    setVoiceName("");
-    notify("音色配对已加入页面草稿，请保存全部设置以持久保存。", "success");
-  }
-  function useSavedVoice(index) {
-    const entry = savedVoices[index];
+  function switchProfile(id) {
+    setPendingProfile(null);
+    if (id === "") {
+      setProfileId("");
+      setProfileName("");
+      setDirty(true);
+      notify("已新增配置草稿，沿用当前全部设置；填写名称后点击保存全部设置。");
+      return;
+    }
+    const entry = data.profiles.find((p) => p.id === id);
     if (!entry) return;
-    if (
-      entry.workspace &&
-      normalizeWorkspace(entry.workspace) !==
-        normalizeWorkspace(draft.connection.workspace)
-    )
-      return notify(
-        "该音色属于其他业务空间，请先在服务与音色中切换到对应完整域名和 API Key。",
-        "error",
-      );
-    setDraft((current) => ({
-      ...current,
-      connection: {
-        ...current.connection,
-        model: entry.model,
-        voice: entry.voice,
-      },
-    }));
+    setDraft((current) => ({ ...current, ...clone(entry.config) }));
+    setProfileId(id);
+    setSourceProfileId(id);
+    setProfileName(entry.name);
+    setClearKey(false);
     setDirty(true);
-    notify(
-      `已切换到“${entry.name}”：模型和音色同时更新。试听立即生效，保存后用于聊天。`,
-      "success",
-    );
+    notify(`已载入“${entry.name}”的全部设置，保存后应用到聊天。`);
   }
-  const selectedVoice = savedVoices.findIndex(
-    (v) =>
-      v.model === draft?.connection.model &&
-      v.voice === draft?.connection.voice &&
-      (!v.workspace ||
-        normalizeWorkspace(v.workspace) ===
-          normalizeWorkspace(draft?.connection.workspace)),
+  const profilePicker = () => (
+    <Stack spacing={2}>
+      <TextField
+        id="config-profile-picker"
+        select
+        fullWidth
+        size="small"
+        label="切换配置文件"
+        value={profileId}
+        disabled={busy}
+        onChange={(e) => {
+          const id = e.target.value;
+          if (dirty && id !== "") setPendingProfile(id);
+          else switchProfile(id);
+        }}
+        helperText="配置文件包含音色、合成参数、词典、服务凭据及全部其他设置。"
+      >
+        <MenuItem value="">新增配置文件</MenuItem>
+        {(data?.profiles || []).map((p) => (
+          <MenuItem key={p.id} value={p.id}>
+            {p.name}
+          </MenuItem>
+        ))}
+      </TextField>
+      <TextField
+        id="config-profile-name"
+        fullWidth
+        size="small"
+        label="配置文件名称"
+        value={profileName}
+        disabled={busy}
+        slotProps={{ htmlInput: { maxLength: 80 } }}
+        onChange={(e) => {
+          setProfileName(e.target.value);
+          setDirty(true);
+        }}
+        helperText="修改后点击右上角“保存全部设置”，统一保存此配置文件。"
+      />
+    </Stack>
   );
-  const savedVoicePicker = () => (
-    <TextField
-      id="saved-voice-picker"
-      select
-      fullWidth
-      size="small"
-      label="切换已保存音色"
-      value={selectedVoice < 0 ? "" : String(selectedVoice)}
-      onChange={(e) => useSavedVoice(Number(e.target.value))}
-      helperText="同时切换模型与音色；保存后应用到聊天。"
-    >
-      <MenuItem value="" disabled>
-        请选择已保存音色
-      </MenuItem>
-      {savedVoices.map((v, i) => (
-        <MenuItem key={i} value={String(i)}>
-          {v.name || v.voice} · {v.model}
-        </MenuItem>
-      ))}
-    </TextField>
-  );
-  const voiceLibraryCard = (
-    <Card sx={cardSx} data-field="voice_library.entries_json">
-      <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
-        <Stack spacing={3}>
-          <Typography variant="h6">保存模型与音色配对</Typography>
-          <Alert severity="info">
-            保存后重载插件仍可选用。切换先用于试听，点击“保存全部设置”后应用到聊天；API
-            Key 不存入音色列表。
-          </Alert>
-          {voiceLibraryError && (
-            <Alert severity="error">{voiceLibraryError}</Alert>
-          )}
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-            <TextField
-              id="voice-name"
-              fullWidth
-              size="small"
-              label="当前音色的名称"
-              value={voiceName}
-              onChange={(e) => setVoiceName(e.target.value)}
-              placeholder="例如：沉稳男声 / 日语音色"
-              slotProps={{ htmlInput: { maxLength: 80 } }}
-            />
-            <Button
-              id="save-current-voice"
-              variant="contained"
-              disabled={busy || !draft?.connection.voice || !!voiceLibraryError}
-              sx={{ whiteSpace: "nowrap" }}
-              onClick={() =>
-                addSavedVoice({
-                  name:
-                    voiceName ||
-                    savedVoices[selectedVoice]?.name ||
-                    draft.connection.voice.slice(-40),
-                  model: draft.connection.model,
-                  voice: draft.connection.voice,
-                  workspace: draft.connection.workspace,
-                })
-              }
-            >
-              保存当前音色
-            </Button>
-          </Stack>
-          <Typography variant="body2" color="text.secondary">
-            当前模型：{draft?.connection.model} · 当前音色：
-            {draft?.connection.voice || "请先在服务与音色中填写"}
-          </Typography>
-          {savedVoices.length === 0 && (
-            <Typography color="text.secondary">
-              尚无已保存音色。可保存当前配置，也可在复刻任务成功后加入列表。
-            </Typography>
-          )}
-          {savedVoices.map((v, i) => (
-            <Box
-              key={i}
-              data-saved-voice={i}
-              sx={{ border: 1, borderColor: "divider", borderRadius: 2, p: 2 }}
-            >
-              <Stack spacing={1.5}>
-                <TextField
-                  size="small"
-                  label="音色名称"
-                  value={v.name}
-                  slotProps={{
-                    htmlInput: { maxLength: 80, "data-saved-name": i },
-                  }}
-                  onChange={(e) =>
-                    writeVoices(
-                      savedVoices.map((item, j) =>
-                        j === i ? { ...item, name: e.target.value } : item,
-                      ),
-                    )
-                  }
-                />
-                <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
-                  {v.model}
-                </Typography>
-                <Typography
-                  component="code"
-                  variant="caption"
-                  sx={{ overflowWrap: "anywhere" }}
-                >
-                  {v.voice}
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  业务空间：{v.workspace || "未绑定（使用当前业务空间）"}
-                </Typography>
-                <Stack direction="row" spacing={1}>
-                  <Button
-                    data-use-voice={i}
-                    disabled={busy}
-                    onClick={() => useSavedVoice(i)}
-                  >
-                    使用音色
-                  </Button>
-                  <Button
-                    color="error"
-                    disabled={busy}
-                    onClick={() =>
-                      writeVoices(savedVoices.filter((_, j) => j !== i))
-                    }
-                  >
-                    移出列表
-                  </Button>
-                </Stack>
-              </Stack>
-            </Box>
-          ))}
-          <Typography variant="caption" color="text.secondary">
-            移出列表只修改本地记录，不会删除阿里云音色。列表修改需保存全部设置。
-          </Typography>
-        </Stack>
-      </CardContent>
-    </Card>
-  );
+  const profileKeySet =
+    sourceProfileId === null
+      ? data?.api_key_set
+      : data?.profiles.find((p) => p.id === sourceProfileId)?.api_key_set;
   const field = (group, name, compact = false) =>
     group === "delivery" && name === "provider_id" ? (
       <TextField
@@ -1084,7 +931,7 @@ function App() {
         value={draft[group][name]}
         onChange={change}
         compact={compact}
-        apiKeySet={data.api_key_set}
+        apiKeySet={profileKeySet}
         clearKey={clearKey}
         onClearKey={() => {
           setClearKey(!clearKey);
@@ -1128,7 +975,7 @@ function App() {
   const current = pages.find((item) => item.id === page) || pages[0];
   const ready =
     draft &&
-    (draft.connection.api_key || (data.api_key_set && !clearKey)) &&
+    (draft.connection.api_key || (profileKeySet && !clearKey)) &&
     draft.connection.workspace &&
     draft.connection.voice;
   const length = draft ? Array.from(draft.preview.text.trim()).length : 0;
@@ -1200,7 +1047,7 @@ function App() {
       <Box sx={{ mt: "auto", pt: 4, ml: 1 }}>
         <Chip
           size="small"
-          label="Material UI · v0.7.0"
+          label="Material UI · v0.8.0"
           variant="outlined"
           sx={{ color: "#a8b9d3", borderColor: "#41516c" }}
         />
@@ -1581,7 +1428,6 @@ function App() {
                           >
                             {draft.connection.voice || "请填写音色 ID"}
                           </Box>
-                          {savedVoicePicker()}
                           <Button
                             size="small"
                             onClick={() => navigate("connection")}
@@ -1613,10 +1459,9 @@ function App() {
                     </Stack>
                   </Box>
                 )}
-                {page === "voices" && voiceLibraryCard}
                 {current.groups && (
                   <Stack spacing={3}>
-                    {page === "connection" && savedVoicePicker()}
+                    {page === "connection" && profilePicker()}
                     {current.groups.map((group) => formCard(group))}
                     {page === "delivery" && (
                       <Alert severity="info">
@@ -1836,25 +1681,6 @@ function App() {
                                 {job.status === "OK" && (
                                   <Button
                                     size="small"
-                                    onClick={() =>
-                                      addSavedVoice({
-                                        name:
-                                          job.prefix +
-                                          " · " +
-                                          job.voice_id.slice(-8),
-                                        model: job.model,
-                                        voice: job.voice_id,
-                                        workspace:
-                                          data.config.connection.workspace,
-                                      })
-                                    }
-                                  >
-                                    保存到音色列表
-                                  </Button>
-                                )}
-                                {job.status === "OK" && (
-                                  <Button
-                                    size="small"
                                     variant="contained"
                                     onClick={() => {
                                       change("connection", "model", job.model);
@@ -1893,6 +1719,23 @@ function App() {
           </Box>
         </Box>
       </Box>
+      <Dialog
+        open={pendingProfile !== null}
+        onClose={() => setPendingProfile(null)}
+      >
+        <DialogTitle>切换配置文件？</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            当前未保存的修改将被替换。需要保留时，请先取消并点击“保存全部设置”。
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPendingProfile(null)}>取消</Button>
+          <Button onClick={() => switchProfile(pendingProfile)}>
+            切换配置文件
+          </Button>
+        </DialogActions>
+      </Dialog>
       <Dialog open={discardDialog} onClose={() => setDiscardDialog(false)}>
         <DialogTitle>重新加载设置？</DialogTitle>
         <DialogContent>
