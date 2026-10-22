@@ -193,10 +193,6 @@ class DirectedSpeechTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(list(self.plugin.audio_dir.iterdir()), [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class DeliveryModeTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = h.PluginTests.asyncSetUp
 
@@ -236,6 +232,42 @@ class DeliveryModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(llm.call_args.kwargs["chat_provider_id"], "registered")
         self.assertEqual(self.config, before)
 
+    async def test_dynamic_natural_speech_plans_and_sends_from_chat(self):
+        self.config["delivery"].update(mode="动态参数", provider_id="registered")
+        self.config["command"]["cooldown_seconds"] = 0
+        llm = AsyncMock(
+            return_value=SimpleNamespace(
+                completion_text=json.dumps(
+                    {
+                        "rate": 1.1,
+                        "pitch": 0.9,
+                        "volume": 60,
+                        "instruction": "低沉",
+                        "segments": [],
+                    }
+                )
+            )
+        )
+        self.context.get_provider_by_id = lambda provider_id: object()
+        self.context.llm_generate = llm
+        with patch.object(
+            h.main, "synthesize_http", return_value=h.wav_bytes()
+        ) as network:
+            for guide in ("低沉", ""):
+                event = h.Event()
+                event.message_str = "用低沉语气朗读你好，最后上扬"
+                result = await self.plugin.natural_speech(
+                    event, "你好", delivery_instruction=guide
+                )
+                self.assertIn("语音已发送", result)
+                self.assertEqual(len(event.sent), 1)
+                self.assertIn(event.message_str, llm.call_args.kwargs["prompt"])
+                self.assertEqual(event.sent[0].chain[0].text, "你好")
+            self.assertEqual(network.call_count, 2)
+        self.assertEqual(llm.await_count, 2)
+        self.assertEqual(self.config["delivery"]["mode"], "动态参数")
+        self.assertEqual(list(self.plugin.audio_dir.iterdir()), [])
+
     async def test_dynamic_invalid_output_never_calls_tts(self):
         self.config["delivery"].update(mode="动态参数", provider_id="registered")
         self.plugin.context = SimpleNamespace(
@@ -250,3 +282,7 @@ class DeliveryModeTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(TTSError):
                 await self.plugin._speak("你好")
             network.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

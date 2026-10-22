@@ -54,7 +54,7 @@ LANGUAGES = {
 MARKER = "qwen_audio_voice_handled"
 
 
-@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "0.6.1")
+@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "0.6.2")
 class QwenAudioVoicePlugin(PanelMixin, Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -531,7 +531,9 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         self._last_command[user] = now
         if self.config.get("delivery", {}).get("mode") == "动态参数":
             delivery_instruction = "\n".join(
-                filter(None, [delivery_instruction, getattr(event, "message_str", "")])
+                part
+                for part in (delivery_instruction, getattr(event, "message_str", ""))
+                if part
             )
         if delivery_instruction or delivery_plan:
             path = await self._speak(
