@@ -55,7 +55,7 @@ LANGUAGES = {
 MARKER = "qwen_audio_voice_handled"
 
 
-@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "1.0.0")
+@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "1.0.1")
 class QwenAudioVoicePlugin(PanelMixin, Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -526,7 +526,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
     async def speak_command(
         self, event: AstrMessageEvent, language: str, text: GreedyStr
     ):
-        """Read user-provided text, applying the configured translation mode."""
+        """Read text with explicit chat language taking precedence over translation."""
         event.should_call_llm(False)
         event.set_extra(MARKER, True)
         try:
@@ -573,7 +573,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         )
         if not code:
             raise TTSError(
-                "用法：/说话 zh 你好；/说话 en Hello world；/说话 ja こんにちは。默认朗读原文，启用翻译模式后先翻译再朗读。"
+                "用法：/说话 zh 你好；/说话 en Hello world；/说话 ja こんにちは。明确指定的语言优先于翻译设置；auto 才跟随全局翻译或默认语言。"
             )
         original_text = str(text)
         text = original_text.strip()
@@ -591,6 +591,17 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
                 for part in (delivery_instruction, getattr(event, "message_str", ""))
                 if part
             )
+        request_options = {}
+        if not preview and language != "auto":
+            # Override only this chat request, including translation and dictionary choice.
+            cfg = snapshot(self.config)
+            if cfg["translation"]["language"] != "不翻译":
+                cfg["translation"]["language"] = {
+                    "zh": "汉语",
+                    "en": "英语",
+                    "ja": "日语",
+                }[code]
+                request_options["config_snapshot"] = cfg
         if delivery_instruction or delivery_plan:
             path = await self._speak(
                 text,
@@ -599,12 +610,17 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
                 instruction=instruction,
                 delivery_instruction=delivery_instruction,
                 delivery_plan=delivery_plan,
+                **request_options,
             )
         elif hot_fix is None and instruction is None:
-            path = await self._speak(text, language=code)
+            path = await self._speak(text, language=code, **request_options)
         else:
             path = await self._speak(
-                text, language=code, hot_fix=hot_fix, instruction=instruction
+                text,
+                language=code,
+                hot_fix=hot_fix,
+                instruction=instruction,
+                **request_options,
             )
         self._track_temporary(event, path)
         record = await self._record(path, text)
@@ -657,7 +673,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         delivery_instruction: str = "",
         delivery_json: str = "",
     ) -> str:
-        """按用户明确要求发送语音；支持中英日朗读、单次指定读音和语气，遵循插件翻译模式。
+        """按用户明确要求发送语音；支持中英日朗读、单次指定读音和语气；用户明确指定的语言优先于全局翻译设置。
 
         仅在用户要求朗读/用语音说/指定读音时调用。不要把用户未要求朗读的普通聊天自动交给本工具。
         发音通道由插件设置决定；给日语名字指定读音时优先构造 replace 假名映射。
@@ -670,7 +686,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
 
         Args:
             text(string): 用户要朗读的原文，必须原样传入；插件根据翻译模式处理语音，双输出文字保留此原文。
-            language(string): auto 跟随默认语言；或 zh、en、ja、中文/英语/日语；未指定用 auto。
+            language(string): 用户明确指定的语言，支持 zh、en、ja、中文/英语/日语，优先于全局翻译设置；用户未指定时必须填 auto，跟随全局翻译或默认语言，不要根据原文语言猜测。
             hot_fix_json(string): 单次 hot_fix 的 JSON 对象字符串，例如 {"replace":[{"鳳凰院凶真":"ほうおういん きょうま"}]}；没有则填空字符串。
             instruction(string): 单次读音/方言指令，按读音修正模式选取；语气和停顿使用 delivery_instruction。
             delivery_instruction(string): 本句朗读指导，例如前半句低沉，后半句激昂，句尾上扬；无则空字符串。

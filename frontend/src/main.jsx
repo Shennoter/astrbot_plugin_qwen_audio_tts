@@ -832,7 +832,7 @@ function App() {
       <Box sx={{ mt: "auto", pt: 4, ml: 1 }}>
         <Chip
           size="small"
-          label="v1.0.0"
+          label="v1.0.1"
           variant="outlined"
           sx={{ color: "#a8b9d3", borderColor: "#41516c" }}
         />

@@ -6,7 +6,7 @@
 
 基于阿里云百炼语音服务的 AstrBot 插件，支持音色创建、文字朗读、随机语音回复与在线试听。
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![Version](https://img.shields.io/badge/version-1.0.1-blue)
 ![AstrBot](https://img.shields.io/badge/AstrBot-plugin-7C3AED)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 
@@ -123,7 +123,7 @@ git clone https://github.com/Shennoter/astrbot_plugin_qwen_audio_tts.git
 | `/说话参数 ja {"text":"鳳凰院凶真","hot_fix":{"replace":[{"鳳凰院凶真":"ほうおういん きょうま"}]}}` | 本次指定读音，受发音模式控制 |
 | `/语音设置 概率 30` | 管理员修改随机语音概率 |
 
-`/说话` 的别名是 `/朗读`、`/qvoice`。指定语言默认不会翻译文本；需要翻译时，请在“朗读与工具”中开启翻译模式。会话白名单使用 AstrBot 内置 `/sid` 返回的完整 UMO。
+`/说话` 的别名是 `/朗读`、`/qvoice`。聊天语言优先级为：**本次明确指定的语言 > 全局翻译语言 > 默认朗读语言**。启用翻译时，本次翻译目标跟随用户指定语言；未指定或使用 `auto` 时才跟随全局设置。关闭翻译时，语言参数仅控制朗读语言，仍朗读原文。会话白名单使用 AstrBot 内置 `/sid` 返回的完整 UMO。
 
 ### 自然语言调用
 

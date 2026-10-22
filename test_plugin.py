@@ -378,15 +378,16 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             types.SimpleNamespace(completion_text=text) for text in (outputs or ["Hello world"])
         ])
 
-    async def test_translation_languages_override_pronunciation_and_preserve_original(self):
+    async def test_translation_auto_language_overrides_default_and_preserves_original(self):
         for target, code, translated in [("汉语", "zh", "你好"), ("日语", "ja", "こんにちは"), ("英语", "en", "Hello")]:
             with self.subTest(target=target):
                 self.enable_translation(target, [translated])
                 self.config["reply"]["dual_output"] = True
                 self.config["command"]["cooldown_seconds"] = 0
+                self.config["audio"]["language"] = "ja" if code != "ja" else "en"
                 original = "  原文\n保持原样  "
                 with patch.object(main, "synthesize_http", return_value=wav_bytes()) as network:
-                    chain = await self.plugin._speech_chain(Event(), original, "zh")
+                    chain = await self.plugin._speech_chain(Event(), original, "auto")
                 self.assertEqual(chain[1].text, original)
                 payload = network.call_args.args[2]["input"]
                 self.assertEqual(payload["text"], translated)
@@ -394,12 +395,67 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(self.config["translation"]["language"], target)
                 self.assertEqual(self.context.llm_generate.await_count, 1)
 
+    async def test_explicit_chat_language_overrides_translation_in_all_entrypoints(self):
+        self.config["command"]["cooldown_seconds"] = 0
+        self.config["reply"]["dual_output"] = True
+        for entry in ("command", "parameters", "natural", "segments"):
+            for language, code, target, translated in (
+                ("中文", "zh", "汉语", "中文译文"),
+                ("English", "en", "英语", "English translation"),
+                ("日本語", "ja", "日语", "日本語の訳"),
+            ):
+                with self.subTest(entry=entry, language=language):
+                    global_target = "英语" if code != "en" else "日语"
+                    self.enable_translation(global_target, [translated])
+                    self.config["audio"]["language"] = "ja" if code != "ja" else "en"
+                    self.config["pronunciation"].update({
+                        "dictionary_" + lang + "_json": json.dumps({translated: lang})
+                        for lang in ("zh", "en", "ja")
+                    })
+                    before = copy.deepcopy(self.config)
+                    event = Event()
+                    original = "原文保持不变"
+                    with patch.object(main, "synthesize_http", return_value=wav_bytes()) as network:
+                        if entry == "command":
+                            results = [r async for r in self.plugin.speak_command(event, language, GreedyStr(original))]
+                            chain = results[0].chain
+                        elif entry == "parameters":
+                            params = json.dumps({"text": original, "hot_fix": {"replace": [{"词": "读音"}]}})
+                            results = [r async for r in self.plugin.speech_with_parameters(event, language, GreedyStr(params))]
+                            chain = results[0].chain
+                        else:
+                            options = {}
+                            if entry == "segments":
+                                options["delivery_json"] = json.dumps({"segments": [{"text": original, "pitch": 1.2}]})
+                            result = await self.plugin.natural_speech(event, original, language=language, **options)
+                            self.assertIn("语音已发送", result)
+                            chain = event.sent[0].chain
+                    payload = network.call_args.args[2]["input"]
+                    self.assertEqual(payload["text"], translated)
+                    self.assertEqual(payload["language_hints"], [code])
+                    self.assertIn({translated: code}, payload["hot_fix"]["replace"])
+                    if entry == "segments":
+                        self.assertEqual(payload["pitch"], 1.2)
+                    self.assertEqual(chain[1].text, original)
+                    self.assertIn("翻译成" + target, self.context.llm_generate.call_args.kwargs["prompt"])
+                    self.assertEqual(self.context.llm_generate.await_count, 1)
+                    self.assertEqual(self.config, before)
+
+    async def test_explicit_language_does_not_enable_disabled_translation(self):
+        self.config["command"]["cooldown_seconds"] = 0
+        self.context.llm_generate = AsyncMock()
+        with patch.object(main, "synthesize_http", return_value=wav_bytes()) as network:
+            await self.plugin._speech_chain(Event(), "原文", "en")
+        self.assertEqual(network.call_args.args[2]["input"]["text"], "原文")
+        self.assertEqual(network.call_args.args[2]["input"]["language_hints"], ["en"])
+        self.context.llm_generate.assert_not_awaited()
+
     async def test_translation_selects_target_dictionary_and_preserves_display_text(self):
         self.enable_translation(outputs=["name"])
         self.config["reply"]["dual_output"] = True
         self.config["pronunciation"].update(dictionary_zh_json='{"name":"中文"}', dictionary_en_json='{"name":"English"}', dictionary_ja_json='{"name":"日本語"}')
         with patch.object(main, "synthesize_http", return_value=wav_bytes()) as network:
-            chain = await self.plugin._speech_chain(Event(), "名字", "zh")
+            chain = await self.plugin._speech_chain(Event(), "名字", "auto")
         self.assertEqual(chain[1].text, "名字")
         self.assertEqual(network.call_args.args[2]["input"]["hot_fix"]["replace"], [{"name": "English"}])
 
@@ -432,7 +488,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.config["translation"]["provider_id"] = ""
         self.context.get_all_providers = Mock(return_value=[types.SimpleNamespace(meta=lambda: types.SimpleNamespace(id="first-chat"))])
         with patch.object(main, "synthesize_http", return_value=wav_bytes()):
-            chain = await self.plugin._speech_chain(Event(), "你好", "zh")
+            chain = await self.plugin._speech_chain(Event(), "你好", "auto")
         self.assertEqual(len(chain), 1)
         self.assertEqual(self.context.llm_generate.call_args.kwargs["chat_provider_id"], "first-chat")
 
