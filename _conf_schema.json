@@ -91,7 +91,8 @@
       "dual_output": {
         "description": "语音与原文同时发送",
         "type": "bool",
-        "default": false
+        "default": false,
+        "hint": "同时发送语音和未经翻译的原文；翻译模式只改变语音内容。"
       },
       "cooldown_seconds": {
         "description": "同一会话自动语音冷却（秒）",
@@ -120,7 +121,7 @@
         "description": "启用 /说话 命令",
         "type": "bool",
         "default": true,
-        "hint": "/说话 zh 你好；/说话 en Hello world；/说话 ja こんにちは。也支持 中文、英语、日语 等名称，只朗读原文，不翻译。"
+        "hint": "/说话 zh 你好；/说话 en Hello world；/说话 ja こんにちは。也支持 中文、英语、日语 等名称，默认朗读原文，启用翻译模式后先翻译再朗读。"
       },
       "admin_only": {
         "description": "仅管理员可使用朗读命令",
@@ -422,6 +423,30 @@
         "type": "text",
         "default": "[]",
         "hint": "由服务与音色中的配置文件选择框和保存全部设置管理，包含全部设置和凭据，请勿公开。"
+      }
+    }
+  },
+  "translation": {
+    "description": "翻译与发送",
+    "type": "object",
+    "items": {
+      "language": {
+        "description": "翻译模式",
+        "type": "string",
+        "default": "不翻译",
+        "options": [
+          "不翻译",
+          "汉语",
+          "日语",
+          "英语"
+        ],
+        "hint": "将所有待合成文字先翻译为所选语言，再生成语音；双输出文字始终保留原文。翻译模式优先于朗读语言。"
+      },
+      "provider_id": {
+        "description": "翻译使用的聊天模型",
+        "type": "string",
+        "default": "",
+        "hint": "留空使用 AstrBot 已登记的第一个聊天模型；也可明确选择。启用翻译后每句或每个分段额外调用一次聊天模型。"
       }
     }
   }

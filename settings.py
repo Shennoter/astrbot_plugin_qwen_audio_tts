@@ -31,7 +31,7 @@ SCHEMA["preview"] = {
             "description": "试听文案",
             "type": "text",
             "default": "你好，这是当前音色的试听。希望这个声音自然、清晰。",
-            "hint": "可视化页面的默认文案；页面内可临时改写。受 TTS 最大字数限制，不自动翻译。",
+            "hint": "可视化页面的默认文案；页面内可临时改写。受 TTS 最大字数限制，遵循翻译模式。",
         },
         "language": {
             "description": "试听语言",

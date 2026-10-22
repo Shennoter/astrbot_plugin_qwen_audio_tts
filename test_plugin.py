@@ -371,6 +371,81 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.audio = Path(self.tmp.name) / "example.wav"
         self.audio.write_bytes(wav_bytes())
 
+    def enable_translation(self, target="英语", outputs=None):
+        self.config["translation"].update(language=target, provider_id="translator")
+        self.context.get_provider_by_id = Mock(return_value=object())
+        self.context.llm_generate = AsyncMock(side_effect=[
+            types.SimpleNamespace(completion_text=text) for text in (outputs or ["Hello world"])
+        ])
+
+    async def test_translation_languages_override_pronunciation_and_preserve_original(self):
+        for target, code, translated in [("汉语", "zh", "你好"), ("日语", "ja", "こんにちは"), ("英语", "en", "Hello")]:
+            with self.subTest(target=target):
+                self.enable_translation(target, [translated])
+                self.config["reply"]["dual_output"] = True
+                self.config["command"]["cooldown_seconds"] = 0
+                original = "  原文\n保持原样  "
+                with patch.object(main, "synthesize_http", return_value=wav_bytes()) as network:
+                    chain = await self.plugin._speech_chain(Event(), original, "zh")
+                self.assertEqual(chain[1].text, original)
+                payload = network.call_args.args[2]["input"]
+                self.assertEqual(payload["text"], translated)
+                self.assertEqual(payload["language_hints"], [code])
+                self.assertEqual(self.config["translation"]["language"], target)
+                self.assertEqual(self.context.llm_generate.await_count, 1)
+
+    async def test_translation_auto_reply_preserves_original_markdown(self):
+        self.enable_translation()
+        self.config["reply"]["dual_output"] = True
+        event = Event("**你好** [世界](https://example.com)")
+        with patch.object(main, "synthesize_http", return_value=wav_bytes()) as network:
+            await self.plugin.random_voice_reply(event)
+        self.assertEqual(event.result.chain[1].text, "**你好** [世界](https://example.com)")
+        self.assertEqual(network.call_args.args[2]["input"]["text"], "Hello world")
+
+    async def test_translation_failure_preserves_auto_text_and_never_synthesizes(self):
+        for output in ("", " ", "x" * 201, None):
+            self.enable_translation(outputs=[output])
+            event = Event("你好")
+            with patch.object(main, "synthesize_http") as network:
+                await self.plugin.random_voice_reply(event)
+            network.assert_not_called()
+            self.assertEqual(event.result.chain[0].text, "你好")
+        self.enable_translation()
+        self.context.llm_generate.side_effect = TimeoutError("private details")
+        with patch.object(main, "synthesize_http") as network:
+            with self.assertRaisesRegex(client.TTSError, "翻译失败"):
+                await self.plugin._speak("你好")
+        network.assert_not_called()
+
+    async def test_translation_automatic_provider_and_voice_only(self):
+        self.enable_translation()
+        self.config["translation"]["provider_id"] = ""
+        self.context.get_all_providers = Mock(return_value=[types.SimpleNamespace(meta=lambda: types.SimpleNamespace(id="first-chat"))])
+        with patch.object(main, "synthesize_http", return_value=wav_bytes()):
+            chain = await self.plugin._speech_chain(Event(), "你好", "zh")
+        self.assertEqual(len(chain), 1)
+        self.assertEqual(self.context.llm_generate.call_args.kwargs["chat_provider_id"], "first-chat")
+
+    async def test_translation_missing_provider_fails_before_tts(self):
+        self.enable_translation()
+        self.context.get_provider_by_id.return_value = None
+        with patch.object(main, "synthesize_http") as network:
+            with self.assertRaisesRegex(client.TTSError, "聊天模型"):
+                await self.plugin._speak("你好")
+        network.assert_not_called()
+
+    async def test_translation_segments_are_translated_once_and_keep_controls(self):
+        self.enable_translation(outputs=["Hello, ", "go!"])
+        plan = {"segments": [{"text": "你好，", "pause_ms": 500, "pitch": 0.9}, {"text": "出发！", "pitch": 1.2}]}
+        with patch.object(main, "synthesize_http", return_value=wav_bytes()) as network:
+            await self.plugin._speak("你好，出发！", delivery_plan=plan)
+        self.assertEqual(self.context.llm_generate.await_count, 2)
+        inputs = [c.args[2]["input"] for c in network.call_args_list]
+        self.assertEqual([p["text"] for p in inputs], ["Hello,", "go!"])
+        self.assertEqual([p["pitch"] for p in inputs], [0.9, 1.2])
+        self.assertEqual(plan["segments"][0]["text"], "你好，")
+
     async def test_works_without_any_builtin_tts_provider(self):
         with patch.object(main, "synthesize_http", return_value=wav_bytes()) as network:
             responses = [

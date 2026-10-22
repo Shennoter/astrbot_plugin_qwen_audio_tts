@@ -120,7 +120,7 @@ const pages = [
     id: "tools",
     title: "朗读与工具",
     icon: BuildIcon,
-    groups: ["command", "natural"],
+    groups: ["translation", "command", "natural"],
     description: "管理命令、自然语言调用与权限。",
   },
 ];
@@ -905,17 +905,20 @@ function App() {
       ? data?.api_key_set
       : data?.profiles.find((p) => p.id === sourceProfileId)?.api_key_set;
   const field = (group, name, compact = false) =>
-    group === "delivery" && name === "provider_id" ? (
+    ["delivery", "translation"].includes(group) && name === "provider_id" ? (
       <TextField
+        key={`${group}.${name}`}
         select
         fullWidth
-        slotProps={{ htmlInput: { "data-field": "delivery.provider_id" } }}
-        label="动态参数规划 LLM"
-        value={draft.delivery.provider_id}
+        slotProps={{ htmlInput: { "data-field": `${group}.provider_id` } }}
+        label={data.schema[group].items[name].description}
+        value={draft[group].provider_id}
         onChange={(e) => change(group, name, e.target.value)}
-        helperText="从 AstrBot 已登记的聊天模型中选择；动态模式每次额外调用一次。"
+        helperText={data.schema[group].items[name].hint}
       >
-        <MenuItem value="">请选择</MenuItem>
+        <MenuItem value="">
+          {group === "translation" ? "自动选择聊天模型" : "请选择"}
+        </MenuItem>
         {(data.providers || []).map((p) => (
           <MenuItem key={p.id} value={p.id}>
             {p.id}
@@ -939,11 +942,11 @@ function App() {
         }}
       />
     );
-  const formCard = (group, names) => (
+  const formCard = (group, names, title) => (
     <Card key={group} sx={cardSx}>
       <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
         <Typography variant="h6" sx={{ fontSize: 17, mb: 3 }}>
-          {data.schema[group].description}
+          {title || data.schema[group].description}
         </Typography>
         <Box
           sx={{
@@ -1047,7 +1050,7 @@ function App() {
       <Box sx={{ mt: "auto", pt: 4, ml: 1 }}>
         <Chip
           size="small"
-          label="Material UI · v0.8.0"
+          label="Material UI · v0.9.0"
           variant="outlined"
           sx={{ color: "#a8b9d3", borderColor: "#41516c" }}
         />
@@ -1262,7 +1265,9 @@ function App() {
                             helperText={
                               <span id="count">
                                 {length} / {draft.reply.max_chars} 字 ·
-                                只朗读，不自动翻译
+                                {draft.translation.language === "不翻译"
+                                  ? "朗读原文"
+                                  : `先翻译为${draft.translation.language}再朗读`}
                               </span>
                             }
                             error={length > draft.reply.max_chars}
@@ -1462,7 +1467,18 @@ function App() {
                 {current.groups && (
                   <Stack spacing={3}>
                     {page === "connection" && profilePicker()}
-                    {current.groups.map((group) => formCard(group))}
+                    {current.id === "tools" &&
+                      formCard("reply", ["dual_output"], "发送方式")}
+                    {current.groups.map((group) =>
+                      formCard(
+                        group,
+                        group === "reply"
+                          ? Object.keys(data.schema.reply.items).filter(
+                              (key) => key !== "dual_output",
+                            )
+                          : undefined,
+                      ),
+                    )}
                     {page === "delivery" && (
                       <Alert severity="info">
                         在聊天中可说：“用低沉语气读‘你好，’，停半秒，再提高音调、激昂地读‘出发吧！’”。聊天模型需要实际调用

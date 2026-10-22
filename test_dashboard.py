@@ -49,6 +49,15 @@ class Files(dict):
 class DashboardTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = h.PluginTests.asyncSetUp
 
+    async def test_translation_settings_validate_and_follow_profiles(self):
+        candidate = settings.validate_draft(self.config, {"translation": {"language": "日语", "provider_id": "chat-test"}})
+        saved = settings.save_profile(self.config, candidate, "", "日语配置")
+        entry = next(p for p in settings.profile_entries(saved) if p["name"] == "日语配置")
+        self.assertEqual(entry["config"]["translation"], {"language": "日语", "provider_id": "chat-test"})
+        self.assertEqual(settings.snapshot({})["translation"]["language"], "不翻译")
+        with self.assertRaises(TTSError):
+            settings.validate_draft(self.config, {"translation": {"language": "其他"}})
+
     def manager(self):
         if getattr(self.plugin, "_enrollment_manager", None) is None:
             self.plugin._enrollment_manager = enrollment.EnrollmentManager(
