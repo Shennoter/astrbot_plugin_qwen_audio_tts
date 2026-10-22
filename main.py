@@ -32,7 +32,7 @@ from .delivery import (
 )
 from .panel import PanelMixin
 from .pronunciation import compose_settings, estimated_text, parse_dictionary
-from .settings import snapshot
+from .settings import parse_saved_voices, saved_voice_connection, snapshot
 from .tts_client import TTSError, build_payload, number, synthesize_http, workspace_base
 
 LANGUAGES = {
@@ -54,7 +54,7 @@ LANGUAGES = {
 MARKER = "qwen_audio_voice_handled"
 
 
-@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "0.6.2")
+@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "0.7.0")
 class QwenAudioVoicePlugin(PanelMixin, Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -684,7 +684,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         self.config[group] = values
         try:
             self.config.save_config()
-        except OSError:
+        except Exception:  # noqa: BLE001 - Restore the group on every persistence failure.
             if previous is None:
                 self.config.pop(group, None)
             else:
@@ -712,8 +712,14 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             "双输出": "dual_output",
             "词典开关": "dictionary_enabled",
             "默认指令": "instruction",
+            "音色": "saved_voice",
         }
         name = aliases.get(name, name)
+        if name == "saved_voice":
+            self._save_group(
+                "connection", saved_voice_connection(self.config, str(value))
+            )
+            return name, value
         bounds = {
             "probability": ("reply", 0, 100, False),
             "max_chars": ("reply", 1, 10000, True),
@@ -777,10 +783,11 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
 
         只有用户明确说设置、以后、一直、默认、关闭、开启等长期修改意图时才修改。
         单次朗读或单次读音要求必须使用 qwen_speak，不能通过本工具永久修改默认指令。
+        管理员要求切换已保存音色时，先用 saved_voices 查看名称，再用 saved_voice 同时切换模型和音色；不得杜撰名称。
 
         Args:
-            setting(string): status 查看状态；修改可选 probability、max_chars、enabled、dual_output、cooldown_seconds、request_mode、dictionary_enabled、dictionary_language、rate、pitch、volume、seed、sample_rate、bit_rate、format、language、instruction、hot_fix_json。
-            value(string): 新值字符串，概率按百分比 0～100，开关用 on/off，模式用 hot_fix/instruction/both；status 时填空字符串。
+            setting(string): status 查看状态；修改可选 probability、max_chars、enabled、dual_output、cooldown_seconds、request_mode、dictionary_enabled、dictionary_language、rate、pitch、volume、seed、sample_rate、bit_rate、format、language、instruction、hot_fix_json；saved_voices 列出已保存音色，saved_voice 按名称切换模型与音色。
+            value(string): 新值字符串，概率按百分比 0～100，开关用 on/off，模式用 hot_fix/instruction/both；status 或 saved_voices 时填空字符串；saved_voice 填已保存音色的完整名称。
 
         Returns:
             Actual saved settings, state, or a permission/error message.
@@ -804,6 +811,17 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         if not event.is_admin():
             return "只有管理员可以修改全局语音设置。"
         try:
+            if setting == "saved_voices":
+                entries = parse_saved_voices(
+                    snapshot(self.config)["voice_library"]["entries_json"]
+                )
+                return json.dumps(
+                    [
+                        {"name": entry["name"], "model": entry["model"]}
+                        for entry in entries
+                    ],
+                    ensure_ascii=False,
+                )
             name, saved = self._update_setting(setting, value)
             return f"已持久保存全局设置 {name}={saved}。"
         except TTSError as exc:

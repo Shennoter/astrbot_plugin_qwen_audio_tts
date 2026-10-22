@@ -78,6 +78,100 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(value["config"]["connection"]["save_audio"])
 
+    async def test_saved_voices_persist_and_switch_model_voice_together(self):
+        pair = {
+            "name": "旧版测试音色",
+            "model": "qwen-audio-3.0-tts-flash",
+            "voice": "qwen-audio-3.0-tts-flash-example",
+            "workspace": "ws-example.cn-beijing.maas.aliyuncs.com",
+        }
+        self.request.json.return_value = {
+            "config": {"voice_library": {"entries_json": json.dumps([pair])}},
+            "revision": settings.revision(self.config),
+        }
+        response, status = await self.plugin.save_settings()
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            json.loads(response["config"]["voice_library"]["entries_json"]), [pair]
+        )
+        reloaded = h.Config(copy.deepcopy(self.config))
+        self.assertEqual(
+            json.loads(
+                settings.public_settings(reloaded)["config"]["voice_library"][
+                    "entries_json"
+                ]
+            ),
+            [pair],
+        )
+        event = h.Event()
+        event.admin = False
+        denied = await self.plugin.natural_voice_control(
+            event, "saved_voice", pair["name"]
+        )
+        self.assertIn("管理员", denied)
+        self.assertNotEqual(self.config["connection"]["model"], pair["model"])
+        event.admin = True
+        result = await self.plugin.natural_voice_control(
+            event, "saved_voice", pair["name"]
+        )
+        self.assertIn("已持久保存", result)
+        with patch.object(
+            h.main, "synthesize_http", return_value=h.wav_bytes()
+        ) as network:
+            await self.plugin._speak("你好")
+            payload = network.call_args.args[2]
+            self.assertEqual(
+                (payload["model"], payload["input"]["voice"]),
+                (pair["model"], pair["voice"]),
+            )
+        self.assertNotIn("test-key", result)
+
+    async def test_invalid_or_mismatched_saved_voices_do_not_mutate_config(self):
+        good = {
+            "name": "测试",
+            "model": "qwen-audio-3.0-tts-flash",
+            "voice": "qwen-audio-3.0-tts-flash-example",
+        }
+        before = copy.deepcopy(self.config)
+        for entries in (
+            {},
+            [good, good],
+            [{**good, "model": "  "}],
+            [{**good, "api_key": "do-not-store"}],
+            [{**good, "workspace": "https://evil.example"}],
+        ):
+            with self.subTest(entries=entries), self.assertRaises(TTSError):
+                settings.validate_draft(
+                    self.config,
+                    {"voice_library": {"entries_json": json.dumps(entries)}},
+                )
+            self.assertEqual(self.config, before)
+
+    async def test_saved_voice_cross_workspace_and_failed_save_preserve_pair(self):
+        entry = {
+            "name": "测试",
+            "model": "qwen-audio-3.0-tts-flash",
+            "voice": "qwen-audio-3.0-tts-flash-example",
+            "workspace": "ws-other.cn-beijing.maas.aliyuncs.com",
+        }
+        self.config["voice_library"]["entries_json"] = json.dumps([entry])
+        before = copy.deepcopy(self.config["connection"])
+        result = await self.plugin.natural_voice_control(
+            h.Event(), "saved_voice", "测试"
+        )
+        self.assertIn("其他业务空间", result)
+        self.assertEqual(self.config["connection"], before)
+        entry["workspace"] = ""
+        self.config["voice_library"]["entries_json"] = json.dumps([entry])
+        for error in (OSError("disk full"), RuntimeError("save failed")):
+            with self.subTest(error=type(error).__name__):
+                self.config.save_config = Mock(side_effect=error)
+                result = await self.plugin.natural_voice_control(
+                    h.Event(), "saved_voice", "测试"
+                )
+                self.assertIn("未保存", result)
+                self.assertEqual(self.config["connection"], before)
+
     async def test_save_all_settings_preserves_secret_and_detects_conflicts(self):
         draft = settings.public_settings(self.config)["config"]
         draft["audio"]["rate"] = 1.25
@@ -178,6 +272,27 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(retained), 1)
             await self.plugin.terminate()
             self.assertTrue(retained[0].exists())
+
+    async def test_cosyvoice_and_future_names_save_and_synthesize(self):
+        for model in ("cosyvoice-v3.5-plus", "cosyvoice-v2", "future/custom:model-v9"):
+            with self.subTest(model=model):
+                pair = {"name": "自由模型", "model": model, "voice": "custom-voice"}
+                draft = settings.validate_draft(
+                    self.config,
+                    {
+                        "connection": {"model": model, "voice": pair["voice"]},
+                        "voice_library": {"entries_json": json.dumps([pair])},
+                    },
+                )
+                selected = settings.saved_voice_connection(draft, pair["name"])
+                self.assertEqual(
+                    (selected["model"], selected["voice"]), (model, pair["voice"])
+                )
+                with patch.object(
+                    h.main, "synthesize_http", return_value=h.wav_bytes()
+                ) as network:
+                    await self.plugin._speak("模型兼容测试", config_snapshot=draft)
+                self.assertEqual(network.call_args.args[2]["model"], model)
 
     async def test_older_model_id_works_with_matching_voice(self):
         draft = settings.validate_draft(
@@ -318,6 +433,24 @@ class EnrollmentTests(unittest.IsolatedAsyncioTestCase):
             loaded.visible_jobs("admin", self.connection)[0]["voice_id"], voice
         )
 
+    async def test_cosyvoice_enrollment_target_is_passed_unchanged(self):
+        model = "cosyvoice-v3.5-plus"
+        token = self.upload()
+        with patch.object(
+            enrollment,
+            "enrollment_http",
+            return_value={"voice_id": model + "-test-one"},
+        ) as network:
+            self.manager.create(
+                "admin",
+                self.connection,
+                self.preferences,
+                {"upload_id": token, "model": model},
+            )
+            await self.drain()
+        self.assertEqual(network.call_args.kwargs["target_model"], model)
+        self.assertEqual(self.manager.jobs[token]["status"], "DEPLOYING")
+
     async def test_network_failure_unknown_and_never_resubmitted(self):
         token = self.upload()
         with patch.object(
@@ -375,7 +508,7 @@ class EnrollmentTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(enrollment, "enrollment_http") as network:
             for body in (
                 {"prefix": "../../x"},
-                {"model": "https://evil"},
+                {"model": "  "},
                 {"enable_preprocess": "false"},
                 {"max_prompt_audio_length": 100},
                 {"audio": "https://127.0.0.1"},

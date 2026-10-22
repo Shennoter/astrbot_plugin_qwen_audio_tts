@@ -123,11 +123,18 @@ def parse_hot_fix(value):
     return result
 
 
+def model_id(value):
+    """Keep model names open to old and future API models; require a value only."""
+    if not isinstance(value, str) or not value.strip():
+        raise TTSError("请填写语音模型 ID。")
+    return value.strip()
+
+
 def build_payload(model, voice, text, settings, language=None, instruction=None):
     """Build a validated request using the published non-streaming parameters.
 
     Args:
-        model: Target Qwen-Audio-TTS model.
+        model: User-supplied model ID for the workspace HTTP TTS API.
         voice: System or cloned voice ID bound to that model.
         text: Original text to read without translation.
         settings: Audio parameter mapping from plugin configuration.
@@ -140,14 +147,9 @@ def build_payload(model, voice, text, settings, language=None, instruction=None)
     Raises:
         TTSError: If a model, voice, or setting is invalid.
     """
-    if not model.lower().startswith("qwen-audio-") or "tts" not in model.lower():
-        raise TTSError(
-            "请选择 qwen-audio-*-tts-* 模型；其他 Qwen TTS 系列不使用此接口。"
-        )
+    model = model_id(model)
     if not voice or not text.strip():
         raise TTSError("音色和合成文字不能为空。")
-    if voice.startswith("qwen-audio-") and not voice.startswith(model + "-"):
-        raise TTSError("复刻音色与模型不匹配，请选择创建音色时绑定的模型。")
     fmt = settings.get("format", "wav")
     if fmt not in ("wav", "mp3", "opus"):
         raise TTSError(
@@ -262,7 +264,7 @@ def synthesize_http(base, api_key, payload, timeout=60):
         headers={
             "Authorization": "Bearer " + api_key,
             "Content-Type": "application/json",
-            "User-Agent": "AstrBot-Qwen-Audio-Plugin/0.6.2",
+            "User-Agent": "AstrBot-Qwen-Audio-Plugin/0.7.0",
         },
         method="POST",
     )

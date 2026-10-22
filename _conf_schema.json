@@ -20,7 +20,7 @@
         "description": "语音模型",
         "type": "string",
         "default": "qwen-audio-3.1-tts-plus",
-        "hint": "手动输入模型 ID，支持 qwen-audio-3.0-tts-*、qwen-audio-3.1-tts-* 等使用该 HTTP 接口的模型；音色必须与模型匹配。"
+        "hint": "自由输入模型 ID，例如 cosyvoice-v3.5-plus 或 qwen-audio-3.1-tts-plus；不限制模型名称，实际支持范围由云端 HTTP 接口决定，音色需与模型匹配。"
       },
       "voice": {
         "description": "音色 ID",
@@ -393,6 +393,18 @@
         "default": "",
         "hint": "选择 AstrBot 已登记的聊天模型。动态模式必须指定；不会自动切换其他模型。",
         "_special": "select_provider"
+      }
+    }
+  },
+  "voice_library": {
+    "description": "已保存音色",
+    "type": "object",
+    "items": {
+      "entries_json": {
+        "description": "音色列表（模型与音色配对）",
+        "type": "text",
+        "default": "[]",
+        "hint": "推荐在 WebUI 的“已保存音色”页面管理。JSON 列表每项包含 name、model、voice，可选 workspace 完整域名；最多 100 项。不保存 API Key。"
       }
     }
   }

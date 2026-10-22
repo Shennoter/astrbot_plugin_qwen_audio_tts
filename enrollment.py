@@ -16,7 +16,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener
 
-from .tts_client import NoRedirect, TTSError, number, workspace_base
+from .tts_client import NoRedirect, TTSError, model_id, number, workspace_base
 
 MAX_AUDIO = 10 * 1024 * 1024
 MAX_MULTIPART = MAX_AUDIO + 64 * 1024
@@ -263,12 +263,7 @@ class EnrollmentManager:
             r"[A-Za-z0-9]{1,10}", prefix
         ):
             raise TTSError("前缀需为 1～10 位英文字母或数字。")
-        if (
-            not isinstance(model, str)
-            or not re.fullmatch(r"qwen-audio-[A-Za-z0-9.-]{1,100}", model)
-            or "-tts-" not in model
-        ):
-            raise TTSError("请输入 Qwen-Audio-TTS 目标模型 ID。")
+        model = model_id(model)
         if language not in ("auto", "zh", "en", "ja"):
             raise TTSError("参考语言不支持。")
         options = {}

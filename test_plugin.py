@@ -261,9 +261,7 @@ class ClientTests(unittest.TestCase):
                     {**defaults()["audio"], **override},
                 )
         with self.assertRaises(client.TTSError):
-            client.build_payload(
-                "qwen-audio-3.1-tts-plus", "qwen-audio-3.1-tts-flash-test", "hello", {}
-            )
+            client.build_payload("  ", "voice", "hello", {})
 
     def test_wav_placeholder_and_metadata_preserved(self):
         wav = bytearray(wav_bytes())
@@ -277,7 +275,7 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(reader.getnframes(), 2400)
 
     def test_service_http_and_credential_isolation(self):
-        payload = client.build_payload("qwen-audio-3.1-tts-plus", "voice", "hello", {})
+        payload = client.build_payload("cosyvoice-v3.5-plus", "voice", "hello", {})
         service = Mock()
         service.open.return_value.__enter__ = Mock(
             return_value=io.BytesIO(

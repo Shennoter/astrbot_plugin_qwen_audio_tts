@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .pronunciation import compose_settings, parse_dictionary
-from .tts_client import TTSError, build_payload, number, workspace_base
+from .tts_client import TTSError, build_payload, model_id, number, workspace_base
 
 SCHEMA = json.loads(
     Path(__file__).with_name("_conf_schema.json").read_text(encoding="utf8")
@@ -115,6 +115,73 @@ def public_settings(config):
     }
 
 
+def parse_saved_voices(raw):
+    """Validate saved model/voice pairs without storing service credentials."""
+    if not isinstance(raw, str) or len(raw.encode("utf8")) > 60000:
+        raise TTSError("已保存音色列表超过 60 KiB 或格式错误。")
+    try:
+        entries = json.loads(raw)
+    except ValueError:
+        raise TTSError("已保存音色列表必须是有效 JSON。") from None
+    if not isinstance(entries, list) or len(entries) > 100:
+        raise TTSError("已保存音色列表最多包含 100 项。")
+    result, seen = [], set()
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) - {
+            "name",
+            "model",
+            "voice",
+            "workspace",
+        }:
+            raise TTSError("每个音色只支持 name、model、voice 和 workspace。")
+        if any(
+            not isinstance(entry.get(key), str) for key in ("name", "model", "voice")
+        ):
+            raise TTSError("音色名称、模型和音色 ID 必须为文字。")
+        name, model, voice = (entry[key].strip() for key in ("name", "model", "voice"))
+        if not name or len(name) > 80:
+            raise TTSError("音色名称需为 1～80 字。")
+        model = model_id(model)
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,256}", voice):
+            raise TTSError("已保存音色的音色 ID 格式不正确。")
+        workspace = entry.get("workspace", "")
+        if not isinstance(workspace, str):
+            raise TTSError("已保存音色的业务空间需为完整域名。")
+        workspace = (
+            urlparse(workspace_base(workspace)).hostname if workspace.strip() else ""
+        )
+        identity = (workspace, model, voice)
+        if identity in seen:
+            raise TTSError("同一业务空间的模型与音色配对不能重复保存。")
+        seen.add(identity)
+        result.append(
+            {"name": name, "model": model, "voice": voice, "workspace": workspace}
+        )
+    return result
+
+
+def saved_voice_connection(config, name):
+    """Resolve a unique saved voice and return one atomic connection update."""
+    cfg = snapshot(config)
+    matches = [
+        entry
+        for entry in parse_saved_voices(cfg["voice_library"]["entries_json"])
+        if entry["name"] == name
+    ]
+    if len(matches) != 1:
+        raise TTSError("未找到唯一的已保存音色名称，请查看列表或修改重名音色。")
+    entry = matches[0]
+    connection = dict(cfg["connection"])
+    if entry["workspace"]:
+        current = urlparse(workspace_base(connection["workspace"])).hostname
+        if entry["workspace"] != current:
+            raise TTSError(
+                "该音色属于其他业务空间，请先在后台配置对应的业务空间和 API Key。"
+            )
+    connection.update(model=entry["model"], voice=entry["voice"])
+    return connection
+
+
 def validate_draft(current, patch, clear_api_key=False):
     """Apply only schema fields, with strict types, bounds and semantic checks."""
     if not isinstance(patch, dict) or set(patch) - set(SCHEMA):
@@ -170,13 +237,14 @@ def validate_draft(current, patch, clear_api_key=False):
         if re.fullmatch(r"ws-[A-Za-z0-9]+", address):
             raise TTSError("请填写业务空间完整域名，而不是短 ID。")
         c["workspace"] = urlparse(workspace_base(address)).hostname
-    if (
-        not re.fullmatch(r"qwen-audio-[A-Za-z0-9.-]+", c["model"])
-        or "-tts-" not in c["model"]
-    ):
-        raise TTSError("请填写使用此 HTTP 接口的 qwen-audio-*-tts-* 模型 ID。")
+    c["model"] = model_id(c["model"])
     if c["voice"] and not re.fullmatch(r"[A-Za-z0-9_.-]{1,256}", c["voice"]):
         raise TTSError("音色 ID 格式不正确。")
+    result["voice_library"]["entries_json"] = json.dumps(
+        parse_saved_voices(result["voice_library"]["entries_json"]),
+        ensure_ascii=False,
+        indent=2,
+    )
     parse_dictionary(result["pronunciation"]["dictionary_json"])
     audio = compose_settings(result["audio"], result["pronunciation"])
     build_payload(c["model"], c["voice"] or "validation", "验证", audio)
