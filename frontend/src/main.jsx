@@ -4,9 +4,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ThemeProvider, createTheme } from "@mui/material/styles";
 import {
-  Accordion,
-  AccordionDetails,
-  AccordionSummary,
   Alert,
   AppBar,
   Avatar,
@@ -53,10 +50,7 @@ import BuildIcon from "@mui/icons-material/Build";
 import MenuIcon from "@mui/icons-material/Menu";
 import SaveIcon from "@mui/icons-material/Save";
 import RefreshIcon from "@mui/icons-material/Refresh";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
-import AddIcon from "@mui/icons-material/Add";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlined";
 import DownloadIcon from "@mui/icons-material/Download";
 
 const bridge = window.AstrBotPluginView;
@@ -300,223 +294,20 @@ function Field({
   );
 }
 
-function DirectionEditor({
-  guide,
-  setGuide,
-  segments,
-  setSegments,
-  text,
-  maxSegments,
-  maxPause,
-  audioDefaults,
-}) {
-  const update = (index, key, value) =>
-    setSegments(
-      segments.map((segment, i) =>
-        i === index ? { ...segment, [key]: value } : segment,
-      ),
-    );
-  const exact =
-    !segments.length ||
-    segments.map((segment) => segment.text).join("") === text.trim();
+function DirectionEditor({ guide, setGuide }) {
   return (
-    <Stack spacing={2}>
-      <TextField
-        id="delivery-instruction"
-        fullWidth
-        multiline
-        minRows={2}
-        label="这句话怎么念（仅本次）"
-        value={guide}
-        onChange={(event) => setGuide(event.target.value)}
-        placeholder="例如：前半句低沉缓慢，后半句激昂，最后几个字语调上扬。"
-        helperText="语气、情绪和升降调由模型按指令表现；不会改动全局设置。"
-        slotProps={{ htmlInput: { maxLength: 2000 } }}
-      />
-      <Accordion
-        disableGutters
-        elevation={0}
-        sx={{
-          border: 1,
-          borderColor: "divider",
-          borderRadius: "10px !important",
-          "&:before": { display: "none" },
-        }}
-      >
-        <AccordionSummary
-          expandIcon={<ExpandMoreIcon />}
-          id="segment-editor-toggle"
-        >
-          <Typography variant="body2" sx={{ fontWeight: 600 }}>
-            精细停顿与分段音调
-          </Typography>
-          <Chip
-            label={segments.length ? `${segments.length} 段` : "可选"}
-            size="small"
-            sx={{ ml: 1 }}
-          />
-        </AccordionSummary>
-        <AccordionDetails>
-          <Stack spacing={2}>
-            <Alert severity="info">
-              每段分别调用语音服务并计费，顺序拼成一条
-              WAV。段尾添加指定静音；模型自身的停顿仍保留。上限 {maxSegments}{" "}
-              段、总静音 {maxPause} 毫秒。
-            </Alert>
-            {segments.map((segment, index) => (
-              <Box
-                key={segment.id}
-                data-segment={index}
-                sx={{
-                  p: 2,
-                  border: 1,
-                  borderColor: "divider",
-                  borderRadius: 2,
-                }}
-              >
-                <Stack
-                  direction="row"
-                  sx={{
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    mb: 1.5,
-                  }}
-                >
-                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                    第 {index + 1} 段
-                  </Typography>
-                  <IconButton
-                    size="small"
-                    aria-label={`删除第${index + 1}段`}
-                    onClick={() =>
-                      setSegments(segments.filter((_, i) => i !== index))
-                    }
-                  >
-                    <DeleteOutlineIcon fontSize="small" />
-                  </IconButton>
-                </Stack>
-                <TextField
-                  fullWidth
-                  size="small"
-                  multiline
-                  label="本段原文"
-                  value={segment.text}
-                  onChange={(event) =>
-                    update(index, "text", event.target.value)
-                  }
-                  slotProps={{ htmlInput: { "data-segment-text": index } }}
-                />
-                <Box
-                  sx={{
-                    display: "grid",
-                    gridTemplateColumns: { xs: "1fr", sm: "repeat(3,1fr)" },
-                    gap: 1.5,
-                    mt: 2,
-                  }}
-                >
-                  <TextField
-                    size="small"
-                    type="number"
-                    label="段尾停顿（ms）"
-                    value={segment.pause_ms}
-                    onChange={(event) =>
-                      update(index, "pause_ms", Number(event.target.value))
-                    }
-                    slotProps={{
-                      htmlInput: {
-                        min: 0,
-                        max: 10000,
-                        step: 50,
-                        "data-segment-pause": index,
-                      },
-                    }}
-                  />
-                  <TextField
-                    size="small"
-                    type="number"
-                    label="本段音调"
-                    value={segment.pitch}
-                    onChange={(event) =>
-                      update(index, "pitch", Number(event.target.value))
-                    }
-                    slotProps={{
-                      htmlInput: {
-                        min: 0.5,
-                        max: 2,
-                        step: 0.05,
-                        "data-segment-pitch": index,
-                      },
-                    }}
-                  />
-                  <TextField
-                    size="small"
-                    type="number"
-                    label="本段语速"
-                    value={segment.rate}
-                    onChange={(event) =>
-                      update(index, "rate", Number(event.target.value))
-                    }
-                    slotProps={{
-                      htmlInput: {
-                        min: 0.5,
-                        max: 2,
-                        step: 0.05,
-                        "data-segment-rate": index,
-                      },
-                    }}
-                  />
-                </Box>
-                <TextField
-                  fullWidth
-                  size="small"
-                  sx={{ mt: 2 }}
-                  label="本段语气 / 升降调"
-                  value={segment.instruction}
-                  onChange={(event) =>
-                    update(index, "instruction", event.target.value)
-                  }
-                  placeholder="例如：低沉，句尾下降 / 激昂，最后上扬"
-                />
-              </Box>
-            ))}
-            {!exact && (
-              <Alert severity="warning" id="segment-error">
-                各段文字连起来必须与原文完全一致，包含标点和空格。
-              </Alert>
-            )}
-            <Stack direction="row" sx={{ gap: 1 }}>
-              <Button
-                id="add-segment"
-                variant="outlined"
-                size="small"
-                startIcon={<AddIcon />}
-                disabled={segments.length >= maxSegments}
-                onClick={() =>
-                  setSegments([
-                    ...segments,
-                    {
-                      id: crypto.randomUUID(),
-                      text: segments.length ? "" : text.trim(),
-                      pause_ms: 0,
-                      pitch: audioDefaults.pitch,
-                      rate: audioDefaults.rate,
-                      instruction: "",
-                    },
-                  ])
-                }
-              >
-                添加一段
-              </Button>
-              {segments.length > 0 && (
-                <Button size="small" onClick={() => setSegments([])}>
-                  改回单次合成
-                </Button>
-              )}
-            </Stack>
-          </Stack>
-        </AccordionDetails>
-      </Accordion>
-    </Stack>
+    <TextField
+      id="delivery-instruction"
+      fullWidth
+      multiline
+      minRows={2}
+      label="这句话怎么念（仅本次）"
+      value={guide}
+      onChange={(event) => setGuide(event.target.value)}
+      placeholder="例如：前半句低沉缓慢，后半句激昂，最后几个字语调上扬。"
+      helperText="语气、情绪和升降调由模型按指令表现；不会改动全局设置。"
+      slotProps={{ htmlInput: { maxLength: 2000 } }}
+    />
   );
 }
 
@@ -546,7 +337,6 @@ function App() {
   const [profileId, setProfileId] = useState("");
   const [sourceProfileId, setSourceProfileId] = useState(null);
   const [pendingProfile, setPendingProfile] = useState(null);
-  const [segments, setSegments] = useState([]);
   const [result, setResult] = useState(null);
   const [file, setFile] = useState(null);
   const [uploaded, setUploaded] = useState(null);
@@ -713,28 +503,16 @@ function App() {
   async function generate(event) {
     event?.preventDefault();
     if (operations.current.busy) return;
-    let config, plan;
+    let config;
     try {
       config = collect();
-      if (segments.length) {
-        if (
-          segments.map((segment) => segment.text).join("") !==
-          config.preview.text.trim()
-        )
-          throw new Error("分段文字拼接后必须与原文完全一致。");
-        plan = { segments: segments.map(({ id, ...segment }) => segment) };
-      }
     } catch (error) {
       notify(error.message, "error");
       return;
     }
     operations.current.busy = true;
     setBusy(true);
-    notify(
-      segments.length
-        ? `正在按 ${segments.length} 段合成并拼接，不会自动重试。`
-        : "正在合成，请等待…",
-    );
+    notify("正在合成，请等待…");
     try {
       const response = await bridge.apiPost("preview/generate", {
         text: config.preview.text,
@@ -743,7 +521,6 @@ function App() {
         clear_api_key: clearKey,
         source_profile_id: sourceProfileId,
         delivery_instruction: guide,
-        ...(plan ? { delivery_plan: plan } : {}),
       });
       if (
         !["audio/wav", "audio/mpeg", "audio/ogg"].includes(response.mime_type)
@@ -1050,7 +827,7 @@ function App() {
       <Box sx={{ mt: "auto", pt: 4, ml: 1 }}>
         <Chip
           size="small"
-          label="Material UI · v0.9.0"
+          label="Material UI · v0.9.1"
           variant="outlined"
           sx={{ color: "#a8b9d3", borderColor: "#41516c" }}
         />
@@ -1276,12 +1053,6 @@ function App() {
                             <DirectionEditor
                               guide={guide}
                               setGuide={setGuide}
-                              segments={segments}
-                              setSegments={setSegments}
-                              text={draft.preview.text}
-                              maxSegments={draft.delivery.max_segments}
-                              maxPause={draft.delivery.max_total_pause_ms}
-                              audioDefaults={draft.audio}
                             />
                           )}
                           <Stack
@@ -1337,8 +1108,7 @@ function App() {
                             </Button>
                           </Stack>
                           <Typography variant="caption" color="text.secondary">
-                            点击后调用语音服务。分段模式每段单独合成并计费，最终返回一条
-                            WAV；不依赖模型的 SSML 支持。
+                            点击后调用语音服务，生成结果可试听或下载。
                           </Typography>
                           {result && (
                             <Box id="result">

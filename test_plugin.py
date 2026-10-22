@@ -394,6 +394,15 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(self.config["translation"]["language"], target)
                 self.assertEqual(self.context.llm_generate.await_count, 1)
 
+    async def test_translation_selects_target_dictionary_and_preserves_display_text(self):
+        self.enable_translation(outputs=["name"])
+        self.config["reply"]["dual_output"] = True
+        self.config["pronunciation"].update(dictionary_zh_json='{"name":"中文"}', dictionary_en_json='{"name":"English"}', dictionary_ja_json='{"name":"日本語"}')
+        with patch.object(main, "synthesize_http", return_value=wav_bytes()) as network:
+            chain = await self.plugin._speech_chain(Event(), "名字", "zh")
+        self.assertEqual(chain[1].text, "名字")
+        self.assertEqual(network.call_args.args[2]["input"]["hot_fix"]["replace"], [{"name": "English"}])
+
     async def test_translation_auto_reply_preserves_original_markdown(self):
         self.enable_translation()
         self.config["reply"]["dual_output"] = True
@@ -741,7 +750,8 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_preview_uses_dictionary_and_does_not_expose_api_key(self):
         self.config["preview"]["text"] = "名字"
-        self.config["pronunciation"]["dictionary_json"] = '{"名字":"读音"}'
+        self.config["audio"]["language"] = "zh"
+        self.config["pronunciation"]["dictionary_zh_json"] = '{"名字":"读音"}'
         with patch.object(main, "synthesize_http", return_value=wav_bytes()) as network:
             response, code = await self.plugin.preview_generate()
         self.assertEqual(

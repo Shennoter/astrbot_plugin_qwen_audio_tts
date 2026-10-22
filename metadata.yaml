@@ -1,6 +1,6 @@
 name: astrbot_plugin_qwen_audio_tts
 display_name: 阿里云TTS助手
 desc: 独立配置 Qwen-Audio-TTS，支持音色保存与模型成对切换、MUI 分类 WebUI、自然语言朗读指导、精细停顿与分段音调、WAV 复刻、实时试听、概率语音、中英日朗读及持久词典。
-version: v0.9.0
+version: v0.9.1
 author: Shennoter
 repo: https://github.com/Shennoter/astrbot_plugin_qwen_audio_tts

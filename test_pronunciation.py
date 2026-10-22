@@ -21,6 +21,17 @@ def flattened(settings, kind="replace"):
 
 
 class PronunciationTests(TestCase):
+    def test_language_dictionaries_are_isolated_and_auto_does_not_mix(self):
+        prefs = {f"dictionary_{code}_json": json.dumps({"名字": reading}) for code, reading in [("zh", "中文读音"), ("ja", "なまえ"), ("en", "name")]}
+        before = copy.deepcopy(prefs)
+        for code, reading in [("zh", "中文读音"), ("ja", "なまえ"), ("en", "name")]:
+            self.assertEqual(flattened(compose_settings({}, prefs, code)), {"名字": reading})
+        self.assertFalse(flattened(compose_settings({}, prefs, "auto")))
+        self.assertEqual(flattened(compose_settings({"language": "en"}, prefs)), {"名字": "name"})
+        self.assertEqual(prefs, before)
+        prefs["dictionary_enabled"] = False
+        self.assertFalse(flattened(compose_settings({}, prefs, "ja")))
+
     def test_merge_priority_and_no_mutation(self):
         audio = {"hot_fix_json": '{"replace":[{"名字":"基础"},{"旧词":"保留"}]}'}
         prefs = {"dictionary_json": '{"名字":"词典","常用词":"固定"}'}
@@ -155,7 +166,21 @@ class NaturalLanguageTests(IsolatedAsyncioTestCase):
         self.assertIn("管理员", result)
         self.assertFalse(event.sent)
 
+    async def test_dictionary_tool_edits_languages_independently(self):
+        event = harness.Event()
+        for code, reading in [("zh", "中文"), ("ja", "日本語"), ("en", "English")]:
+            result = await self.plugin.natural_dictionary(event, "set", "名字", reading, code)
+            self.assertIn("已保存", result)
+            self.assertEqual(json.loads(await self.plugin.natural_dictionary(event, "list", language=code)), {"名字": reading})
+        await self.plugin.natural_dictionary(event, "delete", "名字", language="ja")
+        self.assertEqual(await self.plugin.natural_dictionary(event, "list", language="ja"), "{}")
+        self.assertEqual(json.loads(await self.plugin.natural_dictionary(event, "list", language="en")), {"名字": "English"})
+        self.config["translation"]["language"] = "英语"
+        self.assertEqual(json.loads(await self.plugin.natural_dictionary(event, "list")), {"名字": "English"})
+        self.assertIn("未保存", await self.plugin.natural_dictionary(event, "set", "名字", "读音", "xx"))
+
     async def test_persistent_dictionary_add_edit_delete_and_reload(self):
+        self.config["audio"]["language"] = "ja"
         disk = Path(self.tmp.name) / "plugin_config.json"
 
         def save(config):
@@ -169,7 +194,7 @@ class NaturalLanguageTests(IsolatedAsyncioTestCase):
             self.assertIn("已保存", result)
             reloaded = json.loads(disk.read_text(encoding="utf-8"))
             self.assertEqual(
-                parse_dictionary(reloaded["pronunciation"]["dictionary_json"])[
+                parse_dictionary(reloaded["pronunciation"]["dictionary_ja_json"])[
                     "鳳凰院凶真"
                 ],
                 "ほうおういん きょうま",
@@ -243,7 +268,7 @@ class NaturalLanguageTests(IsolatedAsyncioTestCase):
         self.assertEqual(self.plugin._speak.call_args.kwargs["language"], "ja")
 
     async def test_persistent_rules_reach_auto_and_next_request_is_clean(self):
-        self.config["pronunciation"]["dictionary_json"] = '{"名字":"词典"}'
+        self.config["pronunciation"]["dictionary_ja_json"] = '{"名字":"词典"}'
         with patch.object(
             harness.main, "synthesize_http", return_value=harness.wav_bytes()
         ) as network:
@@ -257,7 +282,8 @@ class NaturalLanguageTests(IsolatedAsyncioTestCase):
         self.assertEqual(second, [{"名字": "词典"}])
 
     async def test_replacement_expansion_respects_maximum_length(self):
-        self.config["pronunciation"]["dictionary_json"] = json.dumps({"字": "A" * 201})
+        self.config["audio"]["language"] = "ja"
+        self.config["pronunciation"]["dictionary_ja_json"] = json.dumps({"字": "A" * 201})
         with (
             patch.object(harness.main, "synthesize_http") as network,
             self.assertRaisesRegex(TTSError, "预计文字长度"),

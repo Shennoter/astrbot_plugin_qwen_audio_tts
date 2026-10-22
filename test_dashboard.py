@@ -58,6 +58,38 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TTSError):
             settings.validate_draft(self.config, {"translation": {"language": "其他"}})
 
+    async def test_old_dictionary_migrates_by_scope_without_overwriting_new_fields(self):
+        for scope, expected in [("all", {"zh", "ja", "en"}), ("ja", {"ja"})]:
+            old = {"pronunciation": {"dictionary_language": scope, "dictionary_json": '{"名字":"旧读音"}'}}
+            result = settings.snapshot(old)
+            for code in ("zh", "ja", "en"):
+                value = json.loads(result["pronunciation"][f"dictionary_{code}_json"])
+                self.assertEqual(value, {"名字": "旧读音"} if code in expected else {})
+            old["pronunciation"]["dictionary_ja_json"] = "{}"
+            self.assertEqual(settings.snapshot(old)["pronunciation"]["dictionary_ja_json"], "{}")
+            profile = settings.profile_entries({"profiles": {"entries_json": json.dumps([{"id": "legacy", "name": "旧配置", "config": old}])}})[0]
+            self.assertEqual(profile["config"]["pronunciation"]["dictionary_ja_json"], "{}")
+
+    async def test_legacy_migration_handles_host_defaults_and_clearing_stays_empty(self):
+        old = copy.deepcopy(self.config)
+        old["pronunciation"].update(dictionary_json='{"词":"旧读音"}', dictionary_language="ja")
+        projected = settings.snapshot(old)
+        self.assertEqual(json.loads(projected["pronunciation"]["dictionary_ja_json"]), {"词": "旧读音"})
+        self.assertEqual(projected["pronunciation"]["dictionary_zh_json"], "{}")
+        cleared = settings.validate_draft(old, {"pronunciation": {"dictionary_ja_json": "{}"}})
+        self.assertNotIn("dictionary_json", cleared["pronunciation"])
+        self.assertEqual(settings.snapshot(cleared)["pronunciation"]["dictionary_ja_json"], "{}")
+
+    async def test_each_language_dictionary_is_validated_and_saved_with_profile(self):
+        patch = {"pronunciation": {f"dictionary_{code}_json": json.dumps({"名字": code}) for code in ("zh", "ja", "en")}}
+        candidate = settings.validate_draft(self.config, patch)
+        saved = settings.save_profile(self.config, candidate, "", "三语词典")
+        profile = next(p for p in settings.profile_entries(saved) if p["name"] == "三语词典")
+        for code in ("zh", "ja", "en"):
+            self.assertEqual(json.loads(profile["config"]["pronunciation"][f"dictionary_{code}_json"]), {"名字": code})
+            with self.assertRaises(TTSError):
+                settings.validate_draft(self.config, {"pronunciation": {f"dictionary_{code}_json": '{"词":3}'}})
+
     def manager(self):
         if getattr(self.plugin, "_enrollment_manager", None) is None:
             self.plugin._enrollment_manager = enrollment.EnrollmentManager(
@@ -103,7 +135,7 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         second = copy.deepcopy(response["config"])
         second["connection"].update(api_key="profile-b-secret", voice="voice-b", max_concurrent=3)
         second["audio"]["rate"] = 1.4
-        second["pronunciation"]["dictionary_json"] = '{"测试":"测式"}'
+        second["pronunciation"]["dictionary_zh_json"] = '{"测试":"测式"}'
         second["reply"]["probability"] = 12
         second["scope"]["allowed_sessions"] = ["session-b"]
         response, status = await self.save_profile_draft("", "配置 B", second)
@@ -122,7 +154,7 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         response, status = await self.save_profile_draft(identity, "配置 B 改名", public_b["config"], identity)
         self.assertEqual(status, 200)
         self.assertEqual(self.config["connection"]["api_key"], "profile-b-secret")
-        self.assertEqual(self.config["pronunciation"]["dictionary_json"], second["pronunciation"]["dictionary_json"])
+        self.assertEqual(self.config["pronunciation"]["dictionary_zh_json"], second["pronunciation"]["dictionary_zh_json"])
         self.assertEqual(self.config["audio"]["rate"], 1.4)
         self.assertEqual(self.config["scope"], second["scope"])
         self.assertEqual(len(response["profiles"]), 2)
@@ -150,7 +182,7 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         result = await self.plugin.natural_dictionary(event, "set", "名字", "なまえ")
         self.assertIn("已保存", result)
         entry = settings.profile_entries(self.config)[0]
-        self.assertEqual(json.loads(entry["config"]["pronunciation"]["dictionary_json"]), {"名字": "なまえ"})
+        self.assertEqual(json.loads(entry["config"]["pronunciation"]["dictionary_zh_json"]), {"名字": "なまえ"})
         previous = copy.deepcopy(dict(self.config))
         self.config.save_config = Mock(side_effect=OSError("disk full"))
         result = await self.plugin.natural_dictionary(event, "set", "其他", "读音")
@@ -309,7 +341,7 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
             {"reply": {"max_chars": -1}},
             {"scope": {"allowed_sessions": [23]}},
             {"audio": {"hot_fix_json": "bad"}},
-            {"pronunciation": {"dictionary_json": '{"a":3}'}},
+            {"pronunciation": {"dictionary_zh_json": '{"a":3}'}},
         ]
         for draft in bad:
             with self.subTest(draft=draft):

@@ -190,23 +190,23 @@
         "type": "bool",
         "default": true
       },
-      "dictionary_language": {
-        "description": "持久词典适用语言",
-        "type": "string",
-        "default": "all",
-        "options": [
-          "all",
-          "zh",
-          "en",
-          "ja"
-        ],
-        "hint": "all 应用于所有请求；其他选项仅在请求明确指定对应语言时使用，auto 不做语言猜测。"
-      },
-      "dictionary_json": {
-        "description": "持久替换词典（JSON）",
+      "dictionary_zh_json": {
+        "description": "汉语持久替换词典（JSON）",
         "type": "text",
         "default": "{}",
-        "hint": "词语到读音的映射，例如 {\"鳳凰院凶真\":\"ほうおういん きょうま\"}。保存后重启仍保留，应用到自动回复、朗读、试听和工具；不改显示原文。同词优先级：单次读音 > 此词典 > 音频页 hot_fix。支持自然语言请求管理员添加、修改、删除。"
+        "hint": "仅在实际朗读语言为汉语时应用；翻译模式按目标语言选择。不改发送原文。填写词语到读音的 JSON 对象。auto 未指定语言时不应用分语言词典。同词优先级：单次读音 > 此词典 > 全局 hot_fix。"
+      },
+      "dictionary_ja_json": {
+        "description": "日语持久替换词典（JSON）",
+        "type": "text",
+        "default": "{}",
+        "hint": "仅在实际朗读语言为日语时应用；翻译模式按目标语言选择。不改发送原文。填写词语到读音的 JSON 对象。auto 未指定语言时不应用分语言词典。同词优先级：单次读音 > 此词典 > 全局 hot_fix。"
+      },
+      "dictionary_en_json": {
+        "description": "英语持久替换词典（JSON）",
+        "type": "text",
+        "default": "{}",
+        "hint": "仅在实际朗读语言为英语时应用；翻译模式按目标语言选择。不改发送原文。填写词语到读音的 JSON 对象。auto 未指定语言时不应用分语言词典。同词优先级：单次读音 > 此词典 > 全局 hot_fix。"
       }
     }
   },

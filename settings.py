@@ -91,6 +91,16 @@ def snapshot(config):
         }
         for group, meta in SCHEMA.items()
     }
+    # Migrate each old profile independently; never overwrite a new language dictionary.
+    previous = config.get("pronunciation", {})
+    # AstrBot may already have inserted new schema defaults while loading an old file.
+    inserted_defaults = "dictionary_json" in previous and all(
+        previous.get(f"dictionary_{code}_json") == "{}" for code in ("zh", "ja", "en")
+    )
+    for code in ("zh", "ja", "en"):
+        key = f"dictionary_{code}_json"
+        if (key not in previous or inserted_defaults) and previous.get("dictionary_language", "all") in ("all", code):
+            result["pronunciation"][key] = copy.deepcopy(previous.get("dictionary_json", "{}"))
     address = result["connection"]["workspace"]
     if re.fullmatch(r"ws-[A-Za-z0-9]+", address):
         result["connection"]["workspace"] = address + ".cn-beijing.maas.aliyuncs.com"
@@ -257,7 +267,8 @@ def validate_draft(current, patch, clear_api_key=False, source_profile_id=None):
         ensure_ascii=False,
         indent=2,
     )
-    parse_dictionary(result["pronunciation"]["dictionary_json"])
+    for code in ("zh", "ja", "en"):
+        parse_dictionary(result["pronunciation"][f"dictionary_{code}_json"])
     audio = compose_settings(result["audio"], result["pronunciation"])
     build_payload(c["model"], c["voice"] or "validation", "验证", audio)
     if not re.fullmatch(r"[A-Za-z0-9]{1,10}", result["cloning"]["prefix"]):

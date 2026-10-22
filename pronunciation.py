@@ -64,14 +64,14 @@ def compose_settings(audio, preferences, language=None, hot_fix=None, instructio
         for entry in entries:
             rules[kind].update(entry)
     target_language = language or settings.get("language", "auto")
-    dictionary_language = preferences.get("dictionary_language", "all")
-    if preferences.get("dictionary_enabled", True) and dictionary_language in (
-        "all",
-        target_language,
-    ):
-        for word, reading in parse_dictionary(
-            preferences.get("dictionary_json", "{}")
-        ).items():
+    if preferences.get("dictionary_enabled", True):
+        if any(f"dictionary_{code}_json" in preferences for code in ("zh", "ja", "en")):
+            dictionary = preferences.get(f"dictionary_{target_language}_json", "{}")
+        else:
+            # Compatibility for callers holding an unprojected legacy configuration.
+            scope = preferences.get("dictionary_language", "all")
+            dictionary = preferences.get("dictionary_json", "{}") if scope in ("all", target_language) else "{}"
+        for word, reading in parse_dictionary(dictionary).items():
             rules["pronunciation"].pop(word, None)
             rules["replace"][word] = reading
     local = parse_hot_fix(hot_fix)

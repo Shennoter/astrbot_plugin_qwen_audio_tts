@@ -55,7 +55,7 @@ LANGUAGES = {
 MARKER = "qwen_audio_voice_handled"
 
 
-@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "0.9.0")
+@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "0.9.1")
 class QwenAudioVoicePlugin(PanelMixin, Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -822,9 +822,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
                     else LANGUAGES.get(str(value).lower(), "invalid")
                 )
         elif name == "dictionary_language":
-            group, result = "pronunciation", str(value)
-            if result not in ("all", "zh", "en", "ja"):
-                raise TTSError("词典语言范围请选择 all、zh、en 或 ja。")
+            raise TTSError("持久词典已按汉语、日语、英语独立设置，请在发音与词典中编辑对应词典。")
         else:
             raise TTSError(
                 "不支持该设置。可修改概率、字数、开关、双输出、冷却、发音模式、词典开关及常用音频参数。"
@@ -847,7 +845,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         管理员要求切换已保存音色时，先用 saved_voices 查看名称，再用 saved_voice 同时切换模型和音色；不得杜撰名称。
 
         Args:
-            setting(string): status 查看状态；修改可选 probability、max_chars、enabled、dual_output、cooldown_seconds、request_mode、dictionary_enabled、dictionary_language、rate、pitch、volume、seed、sample_rate、bit_rate、format、language、instruction、hot_fix_json；saved_voices 列出已保存音色，saved_voice 按名称切换模型与音色。
+            setting(string): status 查看状态；修改可选 probability、max_chars、enabled、dual_output、cooldown_seconds、request_mode、dictionary_enabled、rate、pitch、volume、seed、sample_rate、bit_rate、format、language、instruction、hot_fix_json；saved_voices 列出已保存音色，saved_voice 按名称切换模型与音色。
             value(string): 新值字符串，概率按百分比 0～100，开关用 on/off，模式用 hot_fix/instruction/both；status 或 saved_voices 时填空字符串；saved_voice 填已保存音色的完整名称。
 
         Returns:
@@ -890,7 +888,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
 
     @filter.llm_tool(name="qwen_voice_dictionary")
     async def natural_dictionary(
-        self, event: AstrMessageEvent, operation: str, word: str = "", reading: str = ""
+        self, event: AstrMessageEvent, operation: str, word: str = "", reading: str = "", language: str = "auto"
     ) -> str:
         """查看持久替换词典，或按管理员明确要求记住/修改/删除以后使用的词语读音。
 
@@ -901,9 +899,10 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             operation(string): list 查看词典；set 新增或更新；delete 删除一个词条。
             word(string): 原文词语，例如鳳凰院凶真；list 时填空字符串。
             reading(string): 替换成的读音，例如ほうおういん きょうま；list/delete 时填空字符串。
+            language(string): 词典语言 zh/ja/en 或汉语/日语/英语。auto 优先翻译目标，其次默认朗读语言，均未指定则汉语；修改其他语言必须明确指定。
 
         Returns:
-            The current dictionary or the actual persistence result.
+            The selected language dictionary or the actual persistence result.
         """
         if not self.config.get("natural", {}).get("enabled", True):
             return "语音自然语言工具已关闭。"
@@ -911,8 +910,18 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         if not self._scope_allowed(event):
             return "当前会话不在语音功能启用范围内。"
         try:
-            preferences = dict(self.config.get("pronunciation", {}))
-            dictionary = parse_dictionary(preferences.get("dictionary_json", "{}"))
+            cfg = snapshot(self.config)
+            preferences = cfg["pronunciation"]
+            if language == "auto":
+                code = LANGUAGES.get(cfg["translation"]["language"]) or cfg["audio"]["language"]
+                if code == "auto":
+                    code = "zh"
+            else:
+                code = LANGUAGES.get(language.lower())
+            if code not in ("zh", "ja", "en"):
+                raise TTSError("词典语言请选择汉语、日语或英语。")
+            key = f"dictionary_{code}_json"
+            dictionary = parse_dictionary(preferences[key])
             if operation == "list":
                 return json.dumps(dictionary, ensure_ascii=False, indent=2)
             if not event.is_admin():
@@ -925,11 +934,11 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
                 del dictionary[word]
             else:
                 return "词典操作只支持 list、set、delete。"
-            preferences["dictionary_json"] = json.dumps(
+            preferences[key] = json.dumps(
                 dictionary, ensure_ascii=False, indent=2
             )
             self._save_group("pronunciation", preferences)
-            return "持久替换词典已保存；后续是否应用以词典开关和语言范围设置为准。"
+            return f"{code} 持久替换词典已保存；仅在朗读对应语言且词典开关开启时应用。"
         except TTSError as exc:
             return "词典未保存：" + str(exc)
 
