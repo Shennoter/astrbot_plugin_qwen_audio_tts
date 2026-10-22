@@ -77,8 +77,6 @@ RANGES = {
     "delivery": {"max_segments": (1, 12), "max_total_pause_ms": (0, 30000)},
     "cloning": {
         "max_prompt_audio_length": (3, 30),
-        "cooldown_seconds": (10, 3600),
-        "daily_limit": (1, 100),
     },
 }
 

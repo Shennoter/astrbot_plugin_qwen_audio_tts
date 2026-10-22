@@ -322,15 +322,9 @@
     }
   },
   "cloning": {
-    "description": "WAV 上传与音色复刻",
+    "description": "音色复刻参数",
     "type": "object",
     "items": {
-      "enabled": {
-        "description": "启用 WebUI 音色复刻",
-        "type": "bool",
-        "default": false,
-        "hint": "仅登录管理面板后可上传；创建音色调用阿里云服务并计费。上传校验本身不创建音色。"
-      },
       "prefix": {
         "description": "音色名称前缀",
         "type": "string",
@@ -363,18 +357,6 @@
         "type": "float",
         "default": 20,
         "hint": "3～30 秒；源 WAV 要求 5～60 秒。"
-      },
-      "cooldown_seconds": {
-        "description": "创建音色冷却（秒）",
-        "type": "int",
-        "default": 60,
-        "hint": "10～3600；仅限制创建，不影响查询。"
-      },
-      "daily_limit": {
-        "description": "每天最多创建音色数",
-        "type": "int",
-        "default": 10,
-        "hint": "1～100；按 UTC 日期计数，失败或结果未知的创建也计入。"
       }
     }
   },

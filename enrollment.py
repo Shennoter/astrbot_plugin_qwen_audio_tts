@@ -156,7 +156,7 @@ class EnrollmentManager:
             if not isinstance(self.jobs, dict):
                 raise TypeError("Invalid job journal")
         except (TypeError, ValueError, OSError):
-            # Failing closed preserves duplicate-creation protection and daily quotas.
+            # Failing closed preserves duplicate-creation protection.
             raise TTSError(
                 "音色任务记录损坏，已停止复刻；请先备份并修复记录。"
             ) from None
@@ -287,14 +287,6 @@ class EnrollmentManager:
         )
         now = time.time()
         today = datetime.now(UTC).date().isoformat()
-        if sum(job["date"] == today for job in self.jobs.values()) >= number(
-            preferences["daily_limit"], 1, 100, "每日上限", True
-        ):
-            raise TTSError("今天的音色创建次数已达上限。")
-        if now - max(
-            (job["created"] for job in self.jobs.values()), default=0
-        ) < number(preferences["cooldown_seconds"], 10, 3600, "创建冷却"):
-            raise TTSError("创建过于频繁，请稍后重试。")
         if len(self.jobs) >= 5000:
             raise TTSError("任务记录已达上限，请由管理员归档后再创建。")
         job = {

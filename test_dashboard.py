@@ -57,7 +57,6 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         return self.plugin._enrollment_manager
 
     def stage_upload(self, data=None, filename="sample.wav"):
-        self.config["cloning"]["enabled"] = True
         self.manager()
         upload = Upload(data if data is not None else reference_wav(), filename)
         self.request.headers = {
@@ -249,11 +248,20 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(upload.closed)
             self.assertEqual(self.manager().uploads, {})
 
-    async def test_upload_disabled_before_file_parsing(self):
+    async def test_upload_requires_login_but_no_enable_switch(self):
         self.stage_upload()
-        self.config["cloning"]["enabled"] = False
-        self.assertEqual((await self.plugin.cloning_upload())[1], 400)
+        self.config["cloning"].update(
+            enabled=False, cooldown_seconds=3600, daily_limit=1
+        )
+        self.request.username = ""
+        self.assertEqual((await self.plugin.cloning_upload())[1], 401)
         self.request.files.assert_not_called()
+        self.request.username = "admin"
+        self.assertEqual((await self.plugin.cloning_upload())[1], 200)
+        items = settings.public_settings(self.config)["schema"]["cloning"]["items"]
+        self.assertTrue(
+            {"enabled", "cooldown_seconds", "daily_limit"}.isdisjoint(items)
+        )
 
 
 class EnrollmentTests(unittest.IsolatedAsyncioTestCase):
@@ -346,27 +354,21 @@ class EnrollmentTests(unittest.IsolatedAsyncioTestCase):
         self.manager.purge()
         self.assertFalse(path.exists())
 
-    async def test_daily_quota_and_cooldown_are_durable(self):
-        token = self.upload()
+    async def test_consecutive_creations_ignore_removed_legacy_limits(self):
+        self.preferences.update(enabled=False, daily_limit=1, cooldown_seconds=3600)
         with patch.object(
             enrollment,
             "enrollment_http",
             return_value={"voice_id": self.connection["model"] + "-test-one"},
-        ):
-            self.manager.create(
-                "admin", self.connection, self.preferences, {"upload_id": token}
-            )
-            await self.drain()
-        other = self.upload()
-        with self.assertRaisesRegex(TTSError, "频繁"):
-            self.manager.create(
-                "admin", self.connection, self.preferences, {"upload_id": other}
-            )
-        self.preferences["daily_limit"] = 1
-        with self.assertRaisesRegex(TTSError, "上限"):
-            self.manager.create(
-                "admin", self.connection, self.preferences, {"upload_id": other}
-            )
+        ) as network:
+            for _ in range(3):
+                token = self.upload()
+                result = self.manager.create(
+                    "admin", self.connection, self.preferences, {"upload_id": token}
+                )
+                self.assertEqual(result["status"], "CREATING")
+                await self.drain()
+            self.assertEqual(network.call_count, 3)
 
     async def test_invalid_options_never_call_cloud(self):
         token = self.upload()

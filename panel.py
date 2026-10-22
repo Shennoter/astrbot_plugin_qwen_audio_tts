@@ -30,12 +30,10 @@ class PanelMixin:
             self._enrollment_manager = EnrollmentManager(root)
         return self._enrollment_manager
 
-    def _clone_connection(self, require_enabled=True):
+    def _clone_connection(self):
         if self._closed:
             raise TTSError("插件已停用。")
         cfg = snapshot(self.config)
-        if require_enabled and not cfg["cloning"]["enabled"]:
-            raise TTSError("请先启用并保存 WebUI 音色复刻设置。")
         if not cfg["connection"]["api_key"] or not cfg["connection"]["workspace"]:
             raise TTSError("请先保存 API Key 和业务空间完整域名。")
         return cfg
@@ -136,7 +134,7 @@ class PanelMixin:
         if not web.request.username:
             return web.error_response("请先登录 AstrBot 管理面板。", status_code=401)
         try:
-            cfg = self._clone_connection(False)
+            cfg = self._clone_connection()
             return web.json_response(
                 {
                     "jobs": self._enrollment().visible_jobs(
@@ -152,7 +150,7 @@ class PanelMixin:
         if not web.request.username:
             return web.error_response("请先登录 AstrBot 管理面板。", status_code=401)
         try:
-            cfg = self._clone_connection(False)
+            cfg = self._clone_connection()
             body = await web.request.json(default={})
             if not isinstance(body, dict) or set(body) != {"job_id"}:
                 raise TTSError("查询请求格式错误。")

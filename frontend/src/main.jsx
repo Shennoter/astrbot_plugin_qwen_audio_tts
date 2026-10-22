@@ -548,7 +548,7 @@ function App() {
   const [uploaded, setUploaded] = useState(null);
   const [cloneBusy, setCloneBusy] = useState(false);
   const [cloneMessage, setCloneMessage] = useState(
-    "先启用并保存复刻开关及服务连接，再上传参考录音。",
+    "先保存 API Key 和业务空间完整域名，再上传参考录音。",
   );
   const [jobs, setJobs] = useState([]);
   const [jobError, setJobError] = useState("");
@@ -970,7 +970,7 @@ function App() {
       <Box sx={{ mt: "auto", pt: 4, ml: 1 }}>
         <Chip
           size="small"
-          label="Material UI · v0.6.0"
+          label="Material UI · v0.6.1"
           variant="outlined"
           sx={{ color: "#a8b9d3", borderColor: "#41516c" }}
         />
@@ -1400,7 +1400,7 @@ function App() {
                         display: "grid",
                         gridTemplateColumns: {
                           xs: "1fr",
-                          lg: "minmax(0,1fr) 340px",
+                          lg: "1fr",
                         },
                         gap: 3,
                       }}
@@ -1459,11 +1459,7 @@ function App() {
                               <Button
                                 id="upload"
                                 variant="outlined"
-                                disabled={
-                                  !file ||
-                                  cloneBusy ||
-                                  !data.config.cloning.enabled
-                                }
+                                disabled={!file || cloneBusy}
                                 onClick={upload}
                               >
                                 上传并校验
@@ -1471,11 +1467,7 @@ function App() {
                               <Button
                                 id="create-voice"
                                 variant="contained"
-                                disabled={
-                                  !uploaded ||
-                                  cloneBusy ||
-                                  !data.config.cloning.enabled
-                                }
+                                disabled={!uploaded || cloneBusy}
                                 onClick={createVoice}
                               >
                                 创建云端音色
@@ -1519,11 +1511,6 @@ function App() {
                           </Stack>
                         </CardContent>
                       </Card>
-                      {formCard("cloning", [
-                        "enabled",
-                        "cooldown_seconds",
-                        "daily_limit",
-                      ])}
                     </Box>
                     <Card sx={cardSx}>
                       <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
