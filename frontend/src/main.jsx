@@ -64,7 +64,7 @@ const pages = [
   },
   {
     id: "clone",
-    title: "音色复刻",
+    title: "音色创建",
     icon: MicIcon,
     description: "用一段清晰录音创建专属音色。",
   },
@@ -827,7 +827,7 @@ function App() {
       <Box sx={{ mt: "auto", pt: 4, ml: 1 }}>
         <Chip
           size="small"
-          label="Material UI · v0.9.1"
+          label="v1.0.0"
           variant="outlined"
           sx={{ color: "#a8b9d3", borderColor: "#41516c" }}
         />
