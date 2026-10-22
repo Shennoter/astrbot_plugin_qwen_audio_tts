@@ -22,6 +22,7 @@ def main():
             package_name + ".test_plugin",
             package_name + ".test_pronunciation",
             package_name + ".test_dashboard",
+            package_name + ".test_delivery",
         ]
     )
     result = unittest.TextTestRunner(verbosity=2).run(suite)

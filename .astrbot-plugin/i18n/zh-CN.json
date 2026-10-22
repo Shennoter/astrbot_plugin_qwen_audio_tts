@@ -2,7 +2,7 @@
   "views": {
     "preview": {
       "title": "阿里云TTS助手",
-      "description": "分类管理全部设置、实时调参生成试听、上传 WAV 创建音色。"
+      "description": "MUI 分类管理全部设置，指导语气、停顿与音调，实时试听并上传 WAV 创建音色。"
     }
   }
 }

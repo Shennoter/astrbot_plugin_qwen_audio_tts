@@ -1,56 +1,15 @@
 <!doctype html>
 <!-- SPDX-License-Identifier: AGPL-3.0-only; Copyright (C) 2026 Shennoter -->
 <html lang="zh-CN">
-<head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>阿里云TTS助手</title><link rel="stylesheet" href="./style.css">
-</head>
-<body>
-<div class="app-shell">
-  <aside class="sidebar" id="sidebar">
-    <a class="brand" href="#studio"><span class="brand-icon" aria-hidden="true">声</span><span>阿里云TTS助手<small>VOICE WORKSPACE</small></span></a>
-    <p class="nav-label">工作台</p><nav id="workspace-nav" aria-label="工作台"></nav>
-    <p class="nav-label">插件配置</p><nav id="settings-nav" aria-label="配置分类"></nav>
-    <div class="sidebar-footer"><span class="connection-dot"></span><span>独立语音服务 <small>v0.4.0 · AGPL v3</small></span></div>
-  </aside>
-  <div class="main-shell">
-    <header class="topbar">
-      <div class="breadcrumb"><button id="menu-toggle" class="icon-button" aria-label="展开分类">☰</button><span>语音工作空间</span><span class="separator">/</span><strong id="breadcrumb-title">生成与试听</strong></div>
-      <div class="top-actions"><span class="save-state" id="save-state">正在连接</span><button id="refresh" class="button secondary">重新加载</button><button id="save" class="button primary" disabled>保存全部设置</button></div>
-    </header>
-    <main>
-      <div class="page-heading"><div><p class="eyebrow">ALIYUN TEXT TO SPEECH</p><h1 id="page-title">生成与试听</h1><p id="page-description">调整声音，听见文字。</p></div><span class="badge" id="service-badge">连接中</span></div>
-      <p id="status" class="status-banner" role="status" aria-live="polite">正在连接 AstrBot 管理面板…</p>
-      <section data-page="studio" class="page active">
-        <div class="studio-grid">
-          <section class="card composer">
-            <div class="card-header"><div><h2>让文字发声</h2><p>参数调整立即用于下一次生成，保存后应用到聊天。</p></div><span class="small-badge">按次生成</span></div>
-            <form id="preview-form">
-              <div class="field-heading"><label for="text">要朗读的文字</label><span id="count" class="muted">0 字</span></div>
-              <textarea id="text" class="speech-input" rows="9" placeholder="输入一句话，试试当前的音色…" required></textarea>
-              <div class="composer-bottom"><div><label for="language">本次朗读语言</label><select id="language"><option value="auto">跟随默认语言</option><option value="zh">汉语</option><option value="en">英语</option><option value="ja">日语</option></select></div><button id="generate" class="button primary large" type="submit" disabled><span aria-hidden="true">▶</span> 生成音频</button></div>
-              <p class="hint">只朗读原文，不自动翻译。点击生成后调用阿里云服务并按其规则计费。</p>
-            </form>
-            <section id="result" class="audio-result" hidden><div class="field-heading"><h3>生成结果</h3><a id="download" download="tts-preview.wav">下载音频 ↗</a></div><audio id="audio" controls preload="metadata"></audio><p id="audio-summary" class="hint"></p></section>
-          </section>
-          <div class="studio-right"><section class="card voice-summary"><div class="voice-symbol" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><h2>当前音色</h2><p id="current-model" class="model-name">尚未配置</p><code id="current-voice">请填写音色 ID</code><button class="text-button" data-go="connection">编辑服务与音色 →</button></section><section class="card"><div class="card-header"><div><h2>声音微调</h2><p>与“合成参数”同步。</p></div></div><div id="quick-controls" class="quick-controls"></div></section></div>
-        </div>
-      </section>
-      <section data-page="clone" class="page" hidden>
-        <div class="clone-grid"><section class="card"><div class="card-header"><div><h2>从参考录音创建音色</h2><p>上传校验不会创建音色；点击创建后才调用云端。</p></div><span class="small-badge">WAV</span></div>
-          <label class="upload-zone" for="wav-file"><span class="upload-icon" aria-hidden="true">↑</span><strong>选择参考录音</strong><span>16-bit PCM · 5～60 秒 · ≤ 10 MiB · ≥ 16 kHz</span><input id="wav-file" type="file" accept=".wav,audio/wav"></label>
-          <p id="file-info" class="hint">推荐 10～20 秒单人清晰朗读，至少 5 秒有效人声，避免音乐和长停顿。</p>
-          <div class="inline-actions"><button id="upload" class="button secondary" disabled>上传并校验</button><button id="create-voice" class="button primary" disabled>创建云端音色</button></div>
-          <p id="clone-status" class="hint" role="status" aria-live="polite">请先在下方启用复刻，并保存 API Key 和业务空间域名。</p>
-          <p class="privacy-note">录音仅在后端暂存，创建完成后删除；未提交的录音 15 分钟后过期。不会发布公网录音链接。请仅上传有权使用的声音。</p>
-          <div id="clone-options" class="form-grid"></div>
-        </section><section class="card"><div class="card-header"><div><h2>复刻设置</h2><p>开关与创建限额需保存后生效。</p></div></div><div id="clone-settings" class="form-grid single"></div></section></div>
-        <section class="card history"><div class="card-header"><div><h2>音色任务</h2><p>创建只提交一次；未知结果请到百炼控制台核查。</p></div><button id="refresh-jobs" class="button secondary">刷新任务</button></div><div id="jobs"><p class="hint">暂无任务。</p></div></section>
-      </section>
-      <div id="settings-pages"></div>
-      <footer class="page-footer">阿里云TTS助手 <span>·</span> 配置通过 AstrBot 登录桥接访问 <span>·</span> 密钥只写不回显</footer>
-    </main>
-  </div>
-</div>
-<script type="module" src="./app.js"></script>
-</body></html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>阿里云TTS助手</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>请启用 JavaScript 以使用阿里云TTS助手。</noscript>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

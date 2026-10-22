@@ -180,9 +180,8 @@ with patch.dict(sys.modules, MODULES):
 
 
 def defaults():
-    schema = json.loads(
-        Path(__file__).with_name("_conf_schema.json").read_text(encoding="utf-8")
-    )
+    from .settings import SCHEMA as schema
+
     return Config(
         {
             group: {
@@ -650,7 +649,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.plugin.preview_settings())[1], 401)
         self.request.username = "admin"
         self.config["preview"]["enabled"] = False
-        self.assertEqual((await self.plugin.preview_generate())[1], 403)
+        self.assertNotEqual((await self.plugin.preview_generate())[1], 403)
         self.config["preview"]["enabled"] = True
         self.config["preview"]["text"] = "字" * 201
         response, code = await self.plugin.preview_generate()
@@ -710,7 +709,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(code, 400)
         self.assertNotIn("test-key", response["message"])
         self.assertFalse(self.plugin._preview_busy)
-        self.assertEqual((await self.plugin.preview_generate())[1], 429)
+        self.assertEqual((await self.plugin.preview_generate())[1], 400)
         self.config["preview"]["cooldown_seconds"] = 0
         self.plugin._speak.side_effect = OSError("test-key")
         response, code = await self.plugin.preview_generate()

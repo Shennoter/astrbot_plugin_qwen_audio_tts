@@ -15,6 +15,44 @@ from .tts_client import TTSError, build_payload, number, workspace_base
 SCHEMA = json.loads(
     Path(__file__).with_name("_conf_schema.json").read_text(encoding="utf8")
 )
+# Internal preview defaults are not exposed as plugin settings.
+SCHEMA["preview"] = {
+    "description": "音色试听",
+    "type": "object",
+    "items": {
+        "enabled": {
+            "description": "启用试听功能",
+            "type": "bool",
+            "default": True,
+            "hint": "在“阿里云TTS助手”可视化页面生成并试听。实时调整使用页面草稿，不自动保存或重复生成。",
+        },
+        "text": {
+            "description": "试听文案",
+            "type": "text",
+            "default": "你好，这是当前音色的试听。希望这个声音自然、清晰。",
+            "hint": "可视化页面的默认文案；页面内可临时改写。受 TTS 最大字数限制，不自动翻译。",
+        },
+        "language": {
+            "description": "试听语言",
+            "type": "string",
+            "default": "auto",
+            "options": ["auto", "zh", "en", "ja"],
+            "hint": "auto 跟随音频参数中的默认朗读语言。",
+        },
+        "admin_only": {
+            "description": "聊天中仅管理员可调用自然语言试听",
+            "type": "bool",
+            "default": True,
+            "hint": "只影响聊天工具；WebUI 试听始终要求登录 AstrBot 管理面板，不受聊天会话范围限制。",
+        },
+        "cooldown_seconds": {
+            "description": "试听冷却（秒）",
+            "type": "float",
+            "default": 3.0,
+            "hint": "0～3600；WebUI 试听共用一个冷却并防止重复提交，聊天试听按用户和会话计算，与朗读共享记录。",
+        },
+    },
+}
 RANGES = {
     "connection": {
         "timeout": (5, 300),
@@ -36,6 +74,7 @@ RANGES = {
         "bit_rate": (6, 510),
         "seed": (-1, 65535),
     },
+    "delivery": {"max_segments": (1, 12), "max_total_pause_ms": (0, 30000)},
     "cloning": {
         "max_prompt_audio_length": (3, 30),
         "cooldown_seconds": (10, 3600),
@@ -67,11 +106,12 @@ def revision(config):
 
 def public_settings(config):
     value = snapshot(config)
+    value["preview"]["enabled"] = True
     key_set = bool(value["connection"]["api_key"])
     value["connection"]["api_key"] = ""
     return {
         "config": value,
-        "schema": SCHEMA,
+        "schema": {k: v for k, v in SCHEMA.items() if k != "preview"},
         "revision": revision(config),
         "api_key_set": key_set,
     }

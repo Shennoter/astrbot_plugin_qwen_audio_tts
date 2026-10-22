@@ -11,9 +11,10 @@ from pathlib import Path
 
 from astrbot.api import logger
 
+from .delivery import parse_plan
 from .enrollment import MAX_AUDIO, MAX_MULTIPART, EnrollmentManager, validate_wav
 from .settings import public_settings, revision, snapshot, validate_draft
-from .tts_client import TTSError, number
+from .tts_client import TTSError
 
 
 class PanelMixin:
@@ -183,6 +184,11 @@ class PanelMixin:
         return web.json_response(
             {
                 **public,
+                "providers": [
+                    {"id": p.meta().id} for p in self.context.get_all_providers()
+                ]
+                if hasattr(self.context, "get_all_providers")
+                else [],
                 "enabled": cfg["preview"]["enabled"],
                 "text": cfg["preview"]["text"],
                 "language": cfg["preview"]["language"],
@@ -247,6 +253,8 @@ class PanelMixin:
                 "language",
                 "config",
                 "clear_api_key",
+                "delivery_instruction",
+                "delivery_plan",
             }:
                 raise TTSError("试听请求只支持 text、language 和设置草稿。")
             cfg = snapshot(self.config)
@@ -256,8 +264,6 @@ class PanelMixin:
                 )
             keys.append(cfg["connection"]["api_key"])
             preview = cfg["preview"]
-            if not preview["enabled"]:
-                return web.error_response("试听功能已关闭。", status_code=403)
             text = body.get("text", preview["text"])
             language = body.get("language", preview["language"])
             if not isinstance(text, str) or not text.strip():
@@ -267,17 +273,19 @@ class PanelMixin:
             if self._preview_busy:
                 return web.error_response("试听正在生成，请等待完成。", status_code=429)
             now = time.monotonic()
-            cooldown = number(preview["cooldown_seconds"], 0, 3600, "试听冷却")
-            if now - self._web_preview_at < cooldown:
-                return web.error_response(
-                    "试听请求过于频繁，请稍后重试。", status_code=429
-                )
             self._preview_busy = True
             self._web_preview_at = now
             try:
                 code = cfg["audio"]["language"] if language == "auto" else language
+                plan = parse_plan(
+                    body.get("delivery_plan"), text.strip(), cfg["delivery"]
+                )
                 path = await self._speak(
-                    text.strip(), language=code, config_snapshot=cfg
+                    text.strip(),
+                    language=code,
+                    config_snapshot=cfg,
+                    delivery_instruction=body.get("delivery_instruction"),
+                    delivery_plan=body.get("delivery_plan"),
                 )
                 try:
                     mime = {
@@ -292,6 +300,12 @@ class PanelMixin:
                             ),
                             "mime_type": mime,
                             "filename": "tts-preview" + path.suffix,
+                            "segments": len(plan) if plan else 1,
+                            "added_pause_ms": sum(
+                                item.get("pause_ms", 0) for item in plan
+                            )
+                            if plan
+                            else 0,
                         }
                     )
                 finally:

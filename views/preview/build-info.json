@@ -1,0 +1,160 @@
+{
+  "ui": "Material UI",
+  "libraries": [
+    {
+      "name": "@babel/runtime",
+      "version": "7.29.10",
+      "license": "MIT"
+    },
+    {
+      "name": "@emotion/cache",
+      "version": "11.14.0",
+      "license": "MIT"
+    },
+    {
+      "name": "@emotion/hash",
+      "version": "0.9.2",
+      "license": "MIT"
+    },
+    {
+      "name": "@emotion/is-prop-valid",
+      "version": "1.4.0",
+      "license": "MIT"
+    },
+    {
+      "name": "@emotion/memoize",
+      "version": "0.9.0",
+      "license": "MIT"
+    },
+    {
+      "name": "@emotion/react",
+      "version": "11.14.0",
+      "license": "MIT"
+    },
+    {
+      "name": "@emotion/serialize",
+      "version": "1.3.3",
+      "license": "MIT"
+    },
+    {
+      "name": "@emotion/sheet",
+      "version": "1.4.0",
+      "license": "MIT"
+    },
+    {
+      "name": "@emotion/styled",
+      "version": "11.14.1",
+      "license": "MIT"
+    },
+    {
+      "name": "@emotion/unitless",
+      "version": "0.10.0",
+      "license": "MIT"
+    },
+    {
+      "name": "@emotion/use-insertion-effect-with-fallbacks",
+      "version": "1.2.0",
+      "license": "MIT"
+    },
+    {
+      "name": "@emotion/utils",
+      "version": "1.4.2",
+      "license": "MIT"
+    },
+    {
+      "name": "@emotion/weak-memoize",
+      "version": "0.4.0",
+      "license": "MIT"
+    },
+    {
+      "name": "@mui/icons-material",
+      "version": "9.5.0",
+      "license": "MIT"
+    },
+    {
+      "name": "@mui/material",
+      "version": "9.5.0",
+      "license": "MIT"
+    },
+    {
+      "name": "@mui/private-theming",
+      "version": "9.5.0",
+      "license": "MIT"
+    },
+    {
+      "name": "@mui/styled-engine",
+      "version": "9.5.0",
+      "license": "MIT"
+    },
+    {
+      "name": "@mui/system",
+      "version": "9.5.0",
+      "license": "MIT"
+    },
+    {
+      "name": "@mui/utils",
+      "version": "9.5.0",
+      "license": "MIT"
+    },
+    {
+      "name": "@popperjs/core",
+      "version": "2.11.8",
+      "license": "MIT"
+    },
+    {
+      "name": "clsx",
+      "version": "2.1.1",
+      "license": "MIT"
+    },
+    {
+      "name": "hoist-non-react-statics",
+      "version": "3.3.2",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "prop-types",
+      "version": "15.8.1",
+      "license": "MIT"
+    },
+    {
+      "name": "react-dom",
+      "version": "19.3.1",
+      "license": "MIT"
+    },
+    {
+      "name": "react-is",
+      "version": "16.13.1",
+      "license": "MIT"
+    },
+    {
+      "name": "react-is",
+      "version": "19.3.1",
+      "license": "MIT"
+    },
+    {
+      "name": "react-transition-group",
+      "version": "4.4.5",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "react",
+      "version": "19.3.1",
+      "license": "MIT"
+    },
+    {
+      "name": "scheduler",
+      "version": "0.28.0",
+      "license": "MIT"
+    },
+    {
+      "name": "stylis",
+      "version": "4.2.0",
+      "license": "MIT"
+    }
+  ],
+  "javascript": {
+    "file": "app.js",
+    "bytes": 601800,
+    "sha256": "3a4a98c70ce42525ba57916122b2f69d3cd3d3c5b97022450fb9765dad1924f3"
+  }
+}

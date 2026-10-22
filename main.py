@@ -23,8 +23,16 @@ from astrbot.core.utils.astrbot_path import (
     get_astrbot_temp_path,
 )
 
+from .delivery import (
+    apply_direction,
+    direction,
+    parse_plan,
+    plan_dynamic,
+    synthesize_segments,
+)
 from .panel import PanelMixin
 from .pronunciation import compose_settings, estimated_text, parse_dictionary
+from .settings import snapshot
 from .tts_client import TTSError, build_payload, number, synthesize_http, workspace_base
 
 LANGUAGES = {
@@ -46,7 +54,7 @@ LANGUAGES = {
 MARKER = "qwen_audio_voice_handled"
 
 
-@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "0.4.0")
+@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "0.6.0")
 class QwenAudioVoicePlugin(PanelMixin, Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -165,6 +173,8 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         hot_fix=None,
         instruction=None,
         config_snapshot=None,
+        delivery_instruction=None,
+        delivery_plan=None,
     ):
         """Generate audio exclusively from the plugin's own service configuration.
 
@@ -175,6 +185,8 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             hot_fix: Request-local pronunciation rules, never saved to configuration.
             instruction: Request-local voice instruction, never saved to configuration.
             config_snapshot: Optional isolated dashboard draft for this request.
+            delivery_instruction: Request-local emotion and intonation guidance.
+            delivery_plan: Optional segments with exact pauses and numeric controls.
 
         Returns:
             Path to the generated audio file.
@@ -184,7 +196,40 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         """
         if self._closed:
             raise TTSError("插件已停用。")
-        cfg = config_snapshot if config_snapshot is not None else self.config
+        cfg = snapshot(config_snapshot if config_snapshot is not None else self.config)
+        if len(text) > number(cfg["reply"]["max_chars"], 1, 10000, "最大字数", True):
+            raise TTSError("原文超过最大字数。")
+        mode = cfg["delivery"].get("mode", "混合")
+        if mode not in ("固定参数", "混合", "动态参数"):
+            raise TTSError("单句朗读控制模式无效。")
+        if mode == "固定参数" and (
+            delivery_instruction or delivery_plan or instruction or hot_fix
+        ):
+            raise TTSError("固定参数模式不接受聊天中的临时参数；请在设置中调整。")
+        if mode == "动态参数":
+            if not cfg["connection"]["api_key"] or not cfg["connection"]["voice"]:
+                raise TTSError("请先配置 API Key 和音色。")
+            workspace_base(cfg["connection"]["workspace"])
+            delivery_instruction, delivery_plan = await plan_dynamic(
+                self.context,
+                text,
+                delivery_instruction or instruction or "",
+                delivery_plan,
+                cfg,
+            )
+            cfg["delivery"]["mode"] = (
+                "混合"  # Isolated snapshot; avoid replanning segments.
+            )
+        guide = direction(delivery_instruction, cfg["delivery"])
+        segments = parse_plan(delivery_plan, text, cfg["delivery"])
+        if segments:
+            if len(text) > number(
+                cfg["reply"]["max_chars"], 1, 10000, "最大字数", True
+            ):
+                raise TTSError("原文超过最大字数。")
+            return await synthesize_segments(
+                self, text, language, hot_fix, instruction, guide, segments, cfg
+            )
         connection = cfg.get("connection", {})
         settings = compose_settings(
             cfg.get("audio", {}),
@@ -204,6 +249,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             raise TTSError(
                 f"文字长度 {len(text)} 超过最大字数 {max_chars}，请缩短或调整设置。"
             )
+        settings = apply_direction(settings, guide, cfg["delivery"])
         if automatic:
             settings["enable_ssml"] = False
         model = str(connection.get("model", "qwen-audio-3.1-tts-plus")).strip()
@@ -215,7 +261,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             raise TTSError("请在插件的语音服务配置中填写对应模型的音色 ID。")
         base = workspace_base(connection.get("workspace", ""))
         timeout = number(connection.get("timeout", 60), 5, 300, "超时时间")
-        keep_hours = number(connection.get("keep_hours", 24), 1, 720, "文件保留小时")
+        number(connection.get("keep_hours", 24), 1, 720, "文件保留小时")
         payload = build_payload(model, voice, text, settings, language=language)
         if len(estimated_text(text, payload["input"].get("hot_fix", {}))) > max_chars:
             raise TTSError(
@@ -227,12 +273,17 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             content = await asyncio.to_thread(
                 synthesize_http, base, key, payload, timeout
             )
+        return self._store_audio(content, payload["input"]["format"], connection)
+
+    def _store_audio(self, content, fmt, connection):
+        """Store one finished file with the configured retention policy."""
         if self._closed:
             raise TTSError("插件已停用。")
+        keep_hours = number(connection.get("keep_hours", 24), 1, 720, "文件保留小时")
         prefix = "speech" if connection.get("save_audio", False) else "transient"
         output_dir = self.retained_audio_dir if prefix == "speech" else self.audio_dir
         output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        path = output_dir / f"{prefix}_{uuid.uuid4().hex}.{payload['input']['format']}"
+        path = output_dir / f"{prefix}_{uuid.uuid4().hex}.{fmt}"
         with os.fdopen(
             os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb"
         ) as writer:
@@ -387,7 +438,13 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         self._auto_busy.add(origin)
         original_chain = list(result.chain)
         try:
-            path = await self._speak(text, automatic=True)
+            path = await self._speak(
+                text,
+                automatic=True,
+                delivery_instruction=getattr(event, "message_str", "")
+                if self.config.get("delivery", {}).get("mode") == "动态参数"
+                else None,
+            )
             self._track_temporary(event, path)
             record = await self._record(path, text)
             if event.get_result() is not result:
@@ -427,7 +484,15 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             yield event.plain_result("朗读失败，请检查插件语音服务配置和网络。")
 
     async def _speech_chain(
-        self, event, text, language, hot_fix=None, instruction=None, preview=False
+        self,
+        event,
+        text,
+        language,
+        hot_fix=None,
+        instruction=None,
+        preview=False,
+        delivery_instruction=None,
+        delivery_plan=None,
     ):
         """Apply shared command/tool policy and synthesize one speech message.
 
@@ -464,7 +529,20 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         if now - self._last_command.get(user, -1e12) < cooldown:
             raise TTSError("朗读请求过于频繁，请稍后重试。")
         self._last_command[user] = now
-        if hot_fix is None and instruction is None:
+        if self.config.get("delivery", {}).get("mode") == "动态参数":
+            delivery_instruction = "\n".join(
+                filter(None, [delivery_instruction, getattr(event, "message_str", "")])
+            )
+        if delivery_instruction or delivery_plan:
+            path = await self._speak(
+                text,
+                language=code,
+                hot_fix=hot_fix,
+                instruction=instruction,
+                delivery_instruction=delivery_instruction,
+                delivery_plan=delivery_plan,
+            )
+        elif hot_fix is None and instruction is None:
             path = await self._speak(text, language=code)
         else:
             path = await self._speak(
@@ -518,18 +596,27 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         language: str = "auto",
         hot_fix_json: str = "",
         instruction: str = "",
+        delivery_instruction: str = "",
+        delivery_json: str = "",
     ) -> str:
         """按用户明确要求发送语音；支持中英日朗读、单次指定读音和语气，不翻译。
 
         仅在用户要求朗读/用语音说/指定读音时调用。不要把用户未要求朗读的普通聊天自动交给本工具。
         发音通道由插件设置决定；给日语名字指定读音时优先构造 replace 假名映射。
-        可同时填写两种单次参数，插件按当前模式选取。参数只影响这次，不修改持久词典。
+        语气/停顿/升降调要求放入 delivery_instruction，独立于读音修正模式。
+        精确停顿或分段音调变化时生成 delivery_json；各段 text 拼接必须逐字等于原文。
+        每段调用一次并计费，最多按插件设置分段，最终只发送一条 WAV；不要随意多切段。
+        pause_ms 是该段结束后追加的静音；pitch/rate/volume 是该段数值参数。
+        低沉/激昂/句尾上扬等情感和轮廓用各段 instruction 描述，不承诺精确声学曲线。
+        只影响本次，不修改持久设置。
 
         Args:
             text(string): 用户要朗读的原文，保持原文，不进行翻译。
             language(string): auto 跟随默认语言；或 zh、en、ja、中文/英语/日语；未指定用 auto。
             hot_fix_json(string): 单次 hot_fix 的 JSON 对象字符串，例如 {"replace":[{"鳳凰院凶真":"ほうおういん きょうま"}]}；没有则填空字符串。
-            instruction(string): 单次语气或读音指令，例如温柔地读；没有则填空字符串。
+            instruction(string): 单次读音/方言指令，按读音修正模式选取；语气和停顿使用 delivery_instruction。
+            delivery_instruction(string): 本句朗读指导，例如前半句低沉，后半句激昂，句尾上扬；无则空字符串。
+            delivery_json(string): 精细分段 JSON 字符串，例如 {"segments":[{"text":"你好，","pause_ms":500,"pitch":0.9,"instruction":"低沉"},{"text":"出发吧！","pitch":1.2,"instruction":"激昂，句尾上扬"}]}；仅在明确停顿或分段变化时填写，否则空字符串。
 
         Returns:
             Delivery confirmation or a readable failure, never a fabricated success.
@@ -539,7 +626,13 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         event.set_extra(MARKER, True)
         try:
             chain = await self._speech_chain(
-                event, text, language, hot_fix_json or None, instruction or None
+                event,
+                text,
+                language,
+                hot_fix_json or None,
+                instruction or None,
+                delivery_instruction=delivery_instruction or None,
+                delivery_plan=delivery_json or None,
             )
             try:
                 await event.send(event.chain_result(chain))
@@ -552,7 +645,6 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             logger.warning("Natural speech failed (%s).", type(exc).__name__)
             return "语音发送失败，请检查插件语音服务配置、网络和适配器。"
 
-    @filter.llm_tool(name="qwen_voice_preview")
     async def natural_preview(self, event: AstrMessageEvent) -> str:
         """用户明确要求试听当前音色或测试语音配置时，发送插件设置中的试听句子。
 
