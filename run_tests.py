@@ -23,6 +23,7 @@ def main():
             package_name + ".test_pronunciation",
             package_name + ".test_dashboard",
             package_name + ".test_delivery",
+            package_name + ".test_language_models",
         ]
     )
     result = unittest.TextTestRunner(verbosity=2).run(suite)

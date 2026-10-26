@@ -72,7 +72,7 @@ const pages = [
     id: "connection",
     title: "服务与音色",
     icon: SettingsVoiceIcon,
-    groups: ["connection"],
+    groups: ["connection", "language_models"],
     description: "独立配置 API Key、完整业务空间域名和音色。",
   },
   {
@@ -537,7 +537,7 @@ function App() {
       setResult({
         url: urlRef.current,
         filename: response.filename,
-        model: config.connection.model,
+        model: response.model || config.connection.model,
         format: response.mime_type,
         segments: response.segments || 1,
         pause: response.added_pause_ms || 0,
@@ -740,7 +740,9 @@ function App() {
                 gridColumn:
                   ["text", "list"].includes(
                     data.schema[group].items[name].type,
-                  ) || ["api_key", "workspace", "voice"].includes(name)
+                  ) ||
+                  ["api_key", "workspace", "voice"].includes(name) ||
+                  (group === "language_models" && name === "enabled")
                     ? "1 / -1"
                     : undefined,
               }}
@@ -757,7 +759,13 @@ function App() {
     draft &&
     (draft.connection.api_key || (profileKeySet && !clearKey)) &&
     draft.connection.workspace &&
-    draft.connection.voice;
+    (draft.connection.voice ||
+      (draft.language_models.enabled &&
+        ["zh", "en", "ja"].some(
+          (code) =>
+            draft.language_models[`${code}_model`] &&
+            draft.language_models[`${code}_voice`],
+        )));
   const length = draft ? Array.from(draft.preview.text.trim()).length : 0;
   const sidebar = (
     <Box
@@ -832,7 +840,7 @@ function App() {
       <Box sx={{ mt: "auto", pt: 4, ml: 1 }}>
         <Chip
           size="small"
-          label="v1.0.1"
+          label="v1.1.1"
           variant="outlined"
           sx={{ color: "#a8b9d3", borderColor: "#41516c" }}
         />
@@ -1185,7 +1193,7 @@ function App() {
                             <GraphicEqIcon fontSize="large" />
                           </Avatar>
                           <Typography variant="h6" sx={{ fontSize: 16 }}>
-                            当前音色
+                            默认音色
                           </Typography>
                           <Typography
                             id="current-model"
@@ -1208,6 +1216,14 @@ function App() {
                           >
                             {draft.connection.voice || "请填写音色 ID"}
                           </Box>
+                          {draft.language_models.enabled && (
+                            <Alert
+                              severity="info"
+                              sx={{ mt: 2, textAlign: "left" }}
+                            >
+                              已开启按语言选择模型，生成时使用对应语言的模型与音色；未配置时使用此默认配对。
+                            </Alert>
+                          )}
                           <Button
                             size="small"
                             onClick={() => navigate("connection")}

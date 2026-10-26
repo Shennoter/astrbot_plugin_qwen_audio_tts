@@ -9,6 +9,7 @@ import struct
 import wave
 
 from .pronunciation import compose_settings, estimated_text
+from .language_models import speech_connection
 from .tts_client import TTSError, build_payload, number
 
 MAX_PCM = 64 * 1024 * 1024
@@ -167,16 +168,17 @@ async def synthesize_segments(
         local_guide = "\n".join(
             part for part in (guide, segment["instruction"]) if part
         )
+        code, connection = speech_connection(cfg, segment["text"], language)
         audio = compose_settings(
-            cfg["audio"], cfg["pronunciation"], language, hot_fix, instruction
+            cfg["audio"], cfg["pronunciation"], code, hot_fix, instruction
         )
         audio = apply_direction(audio, local_guide, cfg["delivery"])
         payload = build_payload(
-            cfg["connection"]["model"],
-            cfg["connection"]["voice"],
+            connection["model"],
+            connection["voice"],
             segment["text"],
             audio,
-            language,
+            code,
         )
         total_chars += len(
             estimated_text(segment["text"], payload["input"].get("hot_fix", {}))

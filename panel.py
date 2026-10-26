@@ -12,6 +12,7 @@ from pathlib import Path
 from astrbot.api import logger
 
 from .delivery import parse_plan
+from .language_models import speech_connection
 from .enrollment import MAX_AUDIO, MAX_MULTIPART, EnrollmentManager, validate_wav
 from .settings import public_settings, revision, snapshot, validate_draft, save_profile
 from .tts_client import TTSError
@@ -288,6 +289,10 @@ class PanelMixin:
                 plan = parse_plan(
                     body.get("delivery_plan"), text.strip(), cfg["delivery"]
                 )
+                models = list(dict.fromkeys(
+                    speech_connection(cfg, item["text"], code)[1]["model"]
+                    for item in (plan or [{"text": text.strip()}])
+                ))
                 path = await self._speak(
                     text.strip(),
                     language=code,
@@ -308,6 +313,8 @@ class PanelMixin:
                             ),
                             "mime_type": mime,
                             "filename": "tts-preview" + path.suffix,
+                            "model": " / ".join(models),
+                            "models": models,
                             "segments": len(plan) if plan else 1,
                             "added_pause_ms": sum(
                                 item.get("pause_ms", 0) for item in plan

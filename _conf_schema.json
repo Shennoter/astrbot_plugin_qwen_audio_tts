@@ -60,6 +60,54 @@
       }
     }
   },
+  "language_models": {
+    "description": "按语言选择模型与音色",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用按语言选择模型",
+        "type": "bool",
+        "default": false,
+        "hint": "按最终朗读语言选择模型与音色，共用当前 API Key 和业务空间。语言优先级：翻译目标（聊天明确指定时采用聊天目标）、单次语言、默认朗读语言；均为 auto 时按文本判断中英日。未配置或无法判断时使用默认配对。"
+      },
+      "zh_model": {
+        "description": "汉语模型",
+        "type": "string",
+        "default": "",
+        "hint": "与汉语音色 ID 成对填写；两项留空使用默认模型和音色。"
+      },
+      "zh_voice": {
+        "description": "汉语音色 ID",
+        "type": "string",
+        "default": "",
+        "hint": "必须与汉语模型匹配，并属于当前业务空间。"
+      },
+      "en_model": {
+        "description": "英语模型",
+        "type": "string",
+        "default": "",
+        "hint": "与英语音色 ID 成对填写；两项留空使用默认模型和音色。"
+      },
+      "en_voice": {
+        "description": "英语音色 ID",
+        "type": "string",
+        "default": "",
+        "hint": "必须与英语模型匹配，并属于当前业务空间。"
+      },
+      "ja_model": {
+        "description": "日语模型",
+        "type": "string",
+        "default": "",
+        "hint": "与日语音色 ID 成对填写；两项留空使用默认模型和音色。"
+      },
+      "ja_voice": {
+        "description": "日语音色 ID",
+        "type": "string",
+        "default": "",
+        "hint": "必须与日语模型匹配，并属于当前业务空间。 纯汉字日语请明确指定 ja；自动判断遇到假名选日语，其次汉字选汉语，纯英文字母选英语。单句混合语言使用一个配对，显式分段时逐段选择。"
+      }
+    }
+  },
   "reply": {
     "description": "随机语音回复",
     "type": "object",

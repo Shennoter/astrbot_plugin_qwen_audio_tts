@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .pronunciation import compose_settings, parse_dictionary
+from .language_models import LANGUAGE_NAMES, language_pair
 from .tts_client import TTSError, build_payload, model_id, number, workspace_base
 
 SCHEMA = json.loads(
@@ -262,6 +263,9 @@ def validate_draft(current, patch, clear_api_key=False, source_profile_id=None):
     c["model"] = model_id(c["model"])
     if c["voice"] and not re.fullmatch(r"[A-Za-z0-9_.-]{1,256}", c["voice"]):
         raise TTSError("音色 ID 格式不正确。")
+    for code in LANGUAGE_NAMES:
+        model, voice = language_pair(result["language_models"], code)
+        result["language_models"].update({f"{code}_model": model, f"{code}_voice": voice})
     result["voice_library"]["entries_json"] = json.dumps(
         parse_saved_voices(result["voice_library"]["entries_json"]),
         ensure_ascii=False,
