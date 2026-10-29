@@ -56,7 +56,7 @@ LANGUAGES = {
 MARKER = "qwen_audio_voice_handled"
 
 
-@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "1.1.1")
+@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "1.1.2")
 class QwenAudioVoicePlugin(PanelMixin, Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -69,6 +69,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         self._temporary_files = set()
         self._temporary_tasks = {}
         self._cleanup_tasks = set()
+        self._background_tasks = set()
         self._preview_busy = False
         self._web_preview_at = -1e12
         limit = number(
@@ -130,12 +131,18 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
     async def terminate(self):
         """Stop queued synthesis without modifying any built-in provider."""
         self._closed = True
+        tasks = tuple(self._background_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         if getattr(self, "_enrollment_manager", None):
             await self._enrollment_manager.close()
-        for task in self._cleanup_tasks:
+        tasks = tuple(self._cleanup_tasks)
+        for task in tasks:
             task.cancel()
-        if self._cleanup_tasks:
-            await asyncio.gather(*self._cleanup_tasks, return_exceptions=True)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         for path in list(self._temporary_files):
             self._discard_temporary(path)
         self._auto_busy.clear()
@@ -403,7 +410,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
                     logger.warning("Unable to remove an expired plugin audio file.")
         return path
 
-    async def _record(self, path, text):
+    async def _record(self, path, text, config_snapshot=None):
         """Create a record component, optionally exposing it through file service.
 
         Returns:
@@ -411,7 +418,8 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         """
         record = Record.fromFileSystem(str(path))
         record.text = text
-        if self.config.get("connection", {}).get("use_file_service", False):
+        cfg = config_snapshot if config_snapshot is not None else self.config
+        if cfg.get("connection", {}).get("use_file_service", False):
             url = await record.register_to_file_service()
             record = Record.fromURL(url)
             record.text = text
@@ -439,9 +447,17 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
 
     @filter.after_message_sent()
     async def cleanup_sent_audio(self, event: AstrMessageEvent):
+        ready = event.get_extra("qwen_audio_text_sent")
+        if ready is not None:
+            ready.set()
         paths = event.get_extra("qwen_audio_temporary_paths", [])
         event.set_extra("qwen_audio_temporary_paths", [])
-        if paths and self.config.get("connection", {}).get("use_file_service", False):
+        self._cleanup_audio_paths(
+            paths, self.config.get("connection", {}).get("use_file_service", False)
+        )
+
+    def _cleanup_audio_paths(self, paths, use_file_service=False):
+        if paths and use_file_service and not self._closed:
             # Remote adapters can fetch the file-service URL after acknowledging send.
             async def later():
                 await asyncio.sleep(60)
@@ -454,6 +470,40 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         else:
             for path in paths:
                 self._discard_temporary(path)
+
+    async def _background_voice_reply(self, event, text, cfg, ready, instruction):
+        """Synthesize alongside text delivery, then send only the finished audio."""
+        path = None
+        sent = False
+        origin = event.unified_msg_origin
+        try:
+            path = await self._speak(
+                text,
+                automatic=True,
+                config_snapshot=cfg,
+                delivery_instruction=instruction,
+            )
+            record = await self._record(path, text, config_snapshot=cfg)
+            # Fast synthesis must not overtake text; skipped sends must not leak tasks.
+            await asyncio.wait_for(ready.wait(), timeout=300)
+            if self._closed:
+                return
+            await event.send(event.chain_result([record]))
+            sent = True
+            self._last_auto[origin] = time.monotonic()
+        except Exception as exc:  # noqa: BLE001 - Text has its own delivery path.
+            logger.warning(
+                "Background TTS failed; original text is unchanged (%s).",
+                type(exc).__name__,
+            )
+        finally:
+            if path is not None:
+                self._cleanup_audio_paths(
+                    [path], sent and cfg["connection"]["use_file_service"]
+                )
+            if event.get_extra("qwen_audio_text_sent") is ready:
+                event.set_extra("qwen_audio_text_sent", None)
+            self._auto_busy.discard(origin)
 
     @filter.on_decorating_result()
     async def random_voice_reply(self, event: AstrMessageEvent):
@@ -517,6 +567,20 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         # Mark the result before awaiting so it cannot be processed twice.
         event.set_extra(MARKER, True)
         self._auto_busy.add(origin)
+        if reply.get("text_first", False):
+            cfg = snapshot(self.config)
+            ready = asyncio.Event()
+            event.set_extra("qwen_audio_text_sent", ready)
+            # Keep the full original text, including formatting and reply components.
+            result.use_t2i_ = False
+            task = asyncio.create_task(self._background_voice_reply(
+                event, text, cfg, ready,
+                getattr(event, "message_str", "")
+                if cfg["delivery"]["mode"] == "动态参数" else None,
+            ))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+            return
         original_chain = list(result.chain)
         try:
             path = await self._speak(
@@ -813,6 +877,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             "音量": "volume",
             "默认语言": "language",
             "双输出": "dual_output",
+            "文字先发": "text_first",
             "词典开关": "dictionary_enabled",
             "默认指令": "instruction",
             "音色": "saved_voice",
@@ -837,7 +902,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         if name in bounds:
             group, low, high, integer = bounds[name]
             result = number(value, low, high, name, integer)
-        elif name in ("enabled", "dual_output", "dictionary_enabled"):
+        elif name in ("enabled", "dual_output", "text_first", "dictionary_enabled"):
             booleans = {
                 "开": True,
                 "关": False,
@@ -867,7 +932,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             raise TTSError("持久词典已按汉语、日语、英语独立设置，请在发音与词典中编辑对应词典。")
         else:
             raise TTSError(
-                "不支持该设置。可修改概率、字数、开关、双输出、冷却、发音模式、词典开关及常用音频参数。"
+                "不支持该设置。可修改概率、字数、开关、双输出、文字先发、冷却、发音模式、词典开关及常用音频参数。"
             )
         values = dict(self.config.get(group, {}))
         values[name] = result
@@ -887,7 +952,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         管理员要求切换已保存音色时，先用 saved_voices 查看名称，再用 saved_voice 同时切换模型和音色；不得杜撰名称。
 
         Args:
-            setting(string): status 查看状态；修改可选 probability、max_chars、enabled、dual_output、cooldown_seconds、request_mode、dictionary_enabled、rate、pitch、volume、seed、sample_rate、bit_rate、format、language、instruction、hot_fix_json；saved_voices 列出已保存音色，saved_voice 按名称切换模型与音色。
+            setting(string): status 查看状态；修改可选 probability、max_chars、enabled、dual_output、text_first、cooldown_seconds、request_mode、dictionary_enabled、rate、pitch、volume、seed、sample_rate、bit_rate、format、language、instruction、hot_fix_json；saved_voices 列出已保存音色，saved_voice 按名称切换模型与音色。
             value(string): 新值字符串，概率按百分比 0～100，开关用 on/off，模式用 hot_fix/instruction/both；status 或 saved_voices 时填空字符串；saved_voice 填已保存音色的完整名称。
 
         Returns:

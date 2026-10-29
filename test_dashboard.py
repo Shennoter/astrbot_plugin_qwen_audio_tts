@@ -49,6 +49,17 @@ class Files(dict):
 class DashboardTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = h.PluginTests.asyncSetUp
 
+    async def test_text_first_setting_defaults_validates_and_saves_with_profiles(self):
+        self.assertFalse(settings.snapshot({})["reply"]["text_first"])
+        candidate = settings.validate_draft(self.config, {"reply": {"text_first": True}})
+        saved = settings.save_profile(self.config, candidate, "", "文字先发")
+        entry = next(p for p in settings.profile_entries(saved) if p["name"] == "文字先发")
+        self.assertTrue(entry["config"]["reply"]["text_first"])
+        with self.assertRaises(TTSError):
+            settings.validate_draft(self.config, {"reply": {"text_first": "true"}})
+        self.plugin._update_setting("文字先发", "开")
+        self.assertTrue(self.config["reply"]["text_first"])
+
     async def test_translation_settings_validate_and_follow_profiles(self):
         candidate = settings.validate_draft(self.config, {"translation": {"language": "日语", "provider_id": "chat-test"}})
         saved = settings.save_profile(self.config, candidate, "", "日语配置")

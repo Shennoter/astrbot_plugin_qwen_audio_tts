@@ -601,6 +601,216 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.plugin._speak.call_args.args[0], "你好 世界")
 
+    async def test_text_first_sends_original_while_translation_is_pending(self):
+        self.config["reply"].update(text_first=True, dual_output=False)
+        self.enable_translation()
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def translate(**kwargs):
+            started.set()
+            await release.wait()
+            return types.SimpleNamespace(completion_text="Hello world")
+
+        self.context.llm_generate.side_effect = translate
+        event = Event("**你好** [世界](https://example.com)")
+        original = list(event.result.chain)
+        event.result.chain.extend([At(), Reply()])
+        with patch.object(main, "synthesize_http", return_value=wav_bytes()) as network:
+            await asyncio.wait_for(self.plugin.random_voice_reply(event), 1)
+            tasks = tuple(self.plugin._background_tasks)
+            await asyncio.wait_for(started.wait(), 1)
+            network.assert_not_called()
+            self.assertIs(event.result.chain[0], original[0])
+            self.assertEqual(event.result.chain[0].text, "**你好** [世界](https://example.com)")
+            await event.send(event.result)
+            await self.plugin.cleanup_sent_audio(event)
+            self.assertEqual(len(event.sent), 1)
+            release.set()
+            await asyncio.wait_for(asyncio.gather(*tasks), 2)
+        self.assertEqual(network.call_args.args[2]["input"]["text"], "Hello world")
+        self.assertEqual(len(event.sent), 2)
+        self.assertEqual(len(event.sent[1].chain), 1)
+        self.assertIsInstance(event.sent[1].chain[0], Record)
+        self.assertFalse(self.plugin._temporary_files)
+        self.assertFalse(self.plugin._auto_busy)
+
+    async def test_text_first_fast_audio_waits_for_text_and_cleans_only_after_audio_send(self):
+        self.config["reply"]["text_first"] = True
+        path = self.plugin._store_audio(wav_bytes(), "wav", self.config["connection"])
+        self.plugin._speak = AsyncMock(return_value=path)
+        prepared = asyncio.Event()
+        record = self.plugin._record
+
+        async def prepare(*args, **kwargs):
+            result = await record(*args, **kwargs)
+            prepared.set()
+            return result
+
+        self.plugin._record = prepare
+        event = Event()
+        await self.plugin.random_voice_reply(event)
+        tasks = tuple(self.plugin._background_tasks)
+        await asyncio.wait_for(prepared.wait(), 1)
+        self.assertFalse(event.sent)
+        self.assertTrue(path.exists())
+        await self.plugin.random_voice_reply(event)
+        self.plugin._speak.assert_awaited_once()
+        await event.send(event.result)
+        await self.plugin.cleanup_sent_audio(event)
+        self.assertTrue(path.exists())
+        await asyncio.wait_for(asyncio.gather(*tasks), 1)
+        self.assertEqual(len(event.sent), 2)
+        self.assertFalse(path.exists())
+
+    async def test_text_first_busy_and_cooldown_do_not_hold_other_text(self):
+        self.config["reply"]["text_first"] = True
+        self.plugin._speak = AsyncMock(return_value=self.audio)
+        first, second, other = Event(), Event(), Event()
+        other.unified_msg_origin += "other"
+        await self.plugin.random_voice_reply(first)
+        await self.plugin.random_voice_reply(second)
+        await self.plugin.random_voice_reply(other)
+        self.assertIsInstance(second.result.chain[0], Plain)
+        self.assertEqual(len(self.plugin._background_tasks), 2)
+        tasks = tuple(self.plugin._background_tasks)
+        for event in (first, other):
+            await self.plugin.cleanup_sent_audio(event)
+        await asyncio.wait_for(asyncio.gather(*tasks), 1)
+        self.assertEqual(self.plugin._speak.await_count, 2)
+        after = Event()
+        await self.plugin.random_voice_reply(after)
+        self.assertIsInstance(after.result.chain[0], Plain)
+        self.assertFalse(self.plugin._background_tasks)
+
+    async def test_text_first_failures_preserve_text_and_release_session(self):
+        self.config["reply"]["text_first"] = True
+        for failure in ("translation", "synthesis", "record", "send"):
+            with self.subTest(failure=failure):
+                self.plugin._last_auto.clear()
+                self.plugin._speak = AsyncMock(return_value=self.audio)
+                event = Event("原文")
+                if failure in ("translation", "synthesis"):
+                    self.plugin._speak.side_effect = client.TTSError(failure)
+                elif failure == "send":
+                    event.send = AsyncMock(side_effect=RuntimeError("adapter"))
+                with patch.object(self.plugin, "_record", wraps=self.plugin._record) as record:
+                    if failure == "record":
+                        record.side_effect = RuntimeError("file service")
+                    await self.plugin.random_voice_reply(event)
+                    tasks = tuple(self.plugin._background_tasks)
+                    await self.plugin.cleanup_sent_audio(event)
+                    await asyncio.wait_for(asyncio.gather(*tasks), 1)
+                self.assertEqual(event.result.chain[0].text, "原文")
+                self.assertFalse(self.plugin._auto_busy)
+                self.assertFalse(self.plugin._last_auto)
+                self.assertIsNone(event.get_extra("qwen_audio_text_sent"))
+
+    async def test_text_first_uses_snapshot_despite_later_settings_changes(self):
+        self.config["reply"]["text_first"] = True
+        self.plugin._speak = AsyncMock(return_value=self.audio)
+        event = Event()
+        expected = main.snapshot(self.config)
+        await self.plugin.random_voice_reply(event)
+        tasks = tuple(self.plugin._background_tasks)
+        self.config["translation"]["language"] = "日语"
+        self.config["connection"]["use_file_service"] = True
+        with patch.object(Record, "register_to_file_service", new_callable=AsyncMock) as upload:
+            await self.plugin.cleanup_sent_audio(event)
+            await asyncio.wait_for(asyncio.gather(*tasks), 1)
+        self.assertEqual(self.plugin._speak.call_args.kwargs["config_snapshot"], expected)
+        upload.assert_not_awaited()
+
+    async def test_text_first_shutdown_cancels_pending_work_and_cleans_audio(self):
+        self.config["reply"]["text_first"] = True
+        path = self.plugin._store_audio(wav_bytes(), "wav", self.config["connection"])
+        self.plugin._speak = AsyncMock(return_value=path)
+        prepared = asyncio.Event()
+        record = self.plugin._record
+
+        async def prepare(*args, **kwargs):
+            result = await record(*args, **kwargs)
+            prepared.set()
+            return result
+
+        self.plugin._record = prepare
+        event = Event()
+        await self.plugin.random_voice_reply(event)
+        tasks = tuple(self.plugin._background_tasks)
+        await asyncio.wait_for(prepared.wait(), 1)
+        await self.plugin.terminate()
+        self.assertTrue(all(task.cancelled() for task in tasks))
+        self.assertFalse(event.sent)
+        self.assertFalse(path.exists())
+        self.assertFalse(self.plugin._auto_busy)
+
+    async def test_text_first_respects_existing_eligibility(self):
+        self.config["reply"]["text_first"] = True
+        self.plugin._speak = AsyncMock(return_value=self.audio)
+        for event in (Event("字" * 201), Event("```code```"), Event(kind=ResultContentType.STREAMING_RESULT)):
+            await self.plugin.random_voice_reply(event)
+        self.config["reply"]["probability"] = 0
+        await self.plugin.random_voice_reply(Event())
+        self.assertFalse(self.plugin._background_tasks)
+        self.plugin._speak.assert_not_awaited()
+
+    async def test_text_first_file_service_keeps_audio_until_delayed_cleanup(self):
+        self.config["reply"]["text_first"] = True
+        self.config["connection"]["use_file_service"] = True
+        path = self.plugin._store_audio(wav_bytes(), "wav", self.config["connection"])
+        self.plugin._speak = AsyncMock(return_value=path)
+        event = Event()
+        await self.plugin.random_voice_reply(event)
+        tasks = tuple(self.plugin._background_tasks)
+        await self.plugin.cleanup_sent_audio(event)
+        await asyncio.wait_for(asyncio.gather(*tasks), 1)
+        self.assertEqual(event.sent[0].chain[0].file, "https://files.example/audio")
+        self.assertTrue(path.exists())
+        expiry = self.plugin._temporary_tasks[path]
+        delayed = [t for t in self.plugin._cleanup_tasks if t is not expiry]
+        self.assertEqual(len(delayed), 1)
+        await self.plugin.terminate()
+        self.assertFalse(path.exists())
+
+    async def test_text_first_unload_cancels_inflight_translation(self):
+        self.config["reply"]["text_first"] = True
+        self.enable_translation()
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def translate(**kwargs):
+            started.set()
+            await release.wait()
+
+        self.context.llm_generate.side_effect = translate
+        event = Event("原文")
+        with patch.object(main, "synthesize_http") as network:
+            await self.plugin.random_voice_reply(event)
+            await asyncio.wait_for(started.wait(), 1)
+            await self.plugin.terminate()
+        network.assert_not_called()
+        self.assertFalse(self.plugin._background_tasks)
+        self.assertFalse(self.plugin._auto_busy)
+        self.assertFalse(event.sent)
+        self.assertEqual(event.result.chain[0].text, "原文")
+
+    async def test_text_first_missing_text_send_hook_discards_audio(self):
+        self.config["reply"]["text_first"] = True
+        path = self.plugin._store_audio(wav_bytes(), "wav", self.config["connection"])
+        self.plugin._speak = AsyncMock(return_value=path)
+        event = Event()
+        await self.plugin.random_voice_reply(event)
+        tasks = tuple(self.plugin._background_tasks)
+
+        async def expire(awaitable, timeout):
+            self.assertEqual(timeout, 300)
+            awaitable.close()
+            raise TimeoutError()
+
+        with patch.object(main.asyncio, "wait_for", side_effect=expire):
+            await asyncio.gather(*tasks)
+        self.assertFalse(event.sent)
+        self.assertFalse(path.exists())
+        self.assertFalse(self.plugin._auto_busy)
+
     async def test_cooldown_is_per_session_and_same_session_is_serialized(self):
         self.plugin._speak = AsyncMock(return_value=self.audio)
         first, second, other = Event(), Event(), Event()
