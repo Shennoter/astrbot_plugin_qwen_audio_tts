@@ -402,7 +402,9 @@ class ClientTests(unittest.TestCase):
             client.list_voices(client.workspace_base("ws-example"), "private-key")
 
 
-class PluginTests(unittest.IsolatedAsyncioTestCase):
+class PluginTestBase(unittest.IsolatedAsyncioTestCase):
+    """Fixtures shared by every test case that drives the real plugin."""
+
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -453,6 +455,10 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.context.llm_generate = AsyncMock(side_effect=[
             types.SimpleNamespace(completion_text=text) for text in (outputs or ["Hello world"])
         ])
+
+
+class PluginTests(PluginTestBase):
+    """Chat-side replies, commands, previews and dashboard settings."""
 
     async def test_translation_auto_language_overrides_default_and_preserves_original(self):
         for target, code, translated in [("汉语", "zh", "你好"), ("日语", "ja", "こんにちは"), ("英语", "en", "Hello")]:

@@ -47,8 +47,8 @@ class Files(dict):
         return [self[key]] if key in self else []
 
 
-class DashboardTests(unittest.IsolatedAsyncioTestCase):
-    asyncSetUp = h.PluginTests.asyncSetUp
+class DashboardTests(h.PluginTestBase):
+    """Dashboard settings, preview, upload and retention behaviour."""
 
     async def test_text_first_setting_defaults_validates_and_saves_with_profiles(self):
         self.assertFalse(settings.snapshot({})["reply"]["text_first"])
@@ -474,18 +474,39 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(network.call_args.args[2]["model"], "qwen-audio-3.0-tts-flash")
 
     async def test_all_dashboard_routes_require_login(self):
+        # The table below has to mirror the registration table in
+        # main.initialize(): the real plugin registers its Web APIs here, so
+        # a route that is added without a login test fails this assertion
+        # instead of escaping coverage. Eight routes are registered today.
+        endpoints = {
+            "preview/settings": self.plugin.preview_settings,
+            "preview/generate": self.plugin.preview_generate,
+            "settings/save": self.plugin.save_settings,
+            "voices/list": self.plugin.voice_list,
+            "cloning/upload": self.plugin.cloning_upload,
+            "cloning/create": self.plugin.cloning_create,
+            "cloning/jobs": self.plugin.cloning_jobs,
+            "cloning/query": self.plugin.cloning_query,
+        }
+        self.assertEqual(len(endpoints), 8)
+        web = self.plugin._web
+        await self.plugin.initialize()
+        self.plugin._web = web  # initialize() installs the host web module.
+        prefix = "/astrbot_plugin_qwen_audio_tts/"
+        registered = {}
+        for route in self.context.register_web_api.call_args_list:
+            path = route.args[0]
+            self.assertTrue(path.startswith(prefix), path)
+            registered[path[len(prefix):]] = route.args[1]
+        # Set equal to the live registry: a new route without its handler in
+        # `endpoints`, or a covered handler that is no longer registered, fails.
+        self.maxDiff = None  # print the whole route diff when coverage drifts.
+        self.assertEqual(registered, endpoints)
         self.request.username = None
         self.request.json = AsyncMock(side_effect=AssertionError("must not parse"))
-        for endpoint in (
-            self.plugin.save_settings,
-            self.plugin.preview_settings,
-            self.plugin.preview_generate,
-            self.plugin.cloning_upload,
-            self.plugin.cloning_create,
-            self.plugin.cloning_jobs,
-            self.plugin.cloning_query,
-        ):
-            self.assertEqual((await endpoint())[1], 401)
+        for name, endpoint in endpoints.items():
+            with self.subTest(endpoint=name):
+                self.assertEqual((await endpoint())[1], 401)
         self.request.json.assert_not_called()
 
     async def test_upload_headers_rejected_before_parsing(self):
@@ -788,7 +809,7 @@ class WavAndHTTPTests(unittest.TestCase):
         ):
             enrollment.enrollment_http(connection, "create_voice")
         self.assertNotIn("secret", str(error.exception))
-class VoiceRuleCommandTests(h.PluginTests):
+class VoiceRuleCommandTests(h.PluginTestBase):
     """Chat-side management of the per-persona voice rules."""
 
     async def test_list_reports_defaults_rules_and_known_personas(self):
@@ -918,8 +939,8 @@ class VoiceRuleCommandTests(h.PluginTests):
             await self.plugin._speak("你好")
 
 
-class VoiceModelsEndpointTests(h.PluginTests):
-    """The voices editor may fetch a model list, but stays usable without it."""
+class VoiceListEndpointTests(h.PluginTestBase):
+    """The voices editor fetches the API voice list that fills its picker."""
 
     async def test_voice_list_endpoint_returns_api_voices(self):
         self.request.username = None
