@@ -85,6 +85,11 @@ RANGES = {
 }
 
 
+# The model `_conf_schema.json` ships as the default; the legacy fields may replace
+# it only while no default voice has been chosen.
+_DEFAULT_VOICE_MODEL = SCHEMA["voices"]["items"]["default_model"]["default"]
+
+
 def _legacy_voice_seed(config):
     """Return the voice defaults implied by the pre-1.2 connection fields."""
     connection = config.get("connection", {})
@@ -133,19 +138,47 @@ def _profile_voice_seed(config):
     return _legacy_voice_seed(entry["config"])
 
 
-def _voices_untouched(voices):
-    """Whether a voice options mapping still holds nothing but defaults."""
-    if not isinstance(voices, dict):
-        return True
-    return (
-        str(voices.get("rules_json", "[]") or "[]").strip() in ("", "[]")
-        and not voices.get("default_per_language", False)
-        and not str(voices.get("default_voice", "") or "").strip()
-        and not any(
-            str(voices.get(f"default_{code}_model", "") or "").strip()
-            for code in LANGUAGE_CODES
-        )
-    )
+def _text(value):
+    """Read a stored field as stripped text; a missing or odd value counts as blank."""
+    return str(value or "").strip()
+
+
+def _voice_seed_gaps(voices, seed):
+    """Return the blank voice fields an old-format seed is allowed to fill.
+
+    Only blanks are filled, so a stored user choice is never replaced: the default
+    pair is seeded while its voice is empty and its model is still blank or the
+    shipped default, and a language pair is seeded only while both of its halves
+    are empty and the old format held a complete pair for that language.
+    """
+    if not seed:
+        return {}
+    voices = voices if isinstance(voices, dict) else {}
+    seed_model = _text(seed.get("default_model"))
+    seed_voice = _text(seed.get("default_voice"))
+    model = _text(voices.get("default_model"))
+    voice = _text(voices.get("default_voice"))
+    gaps = {}
+    if (
+        not voice
+        and (not model or model == _DEFAULT_VOICE_MODEL)
+        and (seed_model or seed_voice)
+    ):
+        gaps["default_model"] = seed_model
+        gaps["default_voice"] = seed_voice
+    filled_language = False
+    for code in LANGUAGE_CODES:
+        pair = {
+            f"default_{code}_{key}": _text(seed.get(f"default_{code}_{key}"))
+            for key in ("model", "voice")
+        }
+        if not all(pair.values()) or any(_text(voices.get(field)) for field in pair):
+            continue
+        gaps.update(pair)
+        filled_language = True
+    if filled_language and not voices.get("default_per_language", False):
+        gaps["default_per_language"] = True
+    return gaps
 
 
 def snapshot(config):
@@ -157,10 +190,10 @@ def snapshot(config):
         }
         for group, meta in SCHEMA.items()
     }
-    if _voices_untouched(result["voices"]):
-        seed = _legacy_voice_seed(config) or _profile_voice_seed(config)
-        if seed:
-            result["voices"].update(seed)
+    # The pre-1.2 fields still explain blank voice settings; stored values win.
+    voices = result["voices"]
+    seed = _legacy_voice_seed(config) or _profile_voice_seed(config)
+    voices.update(_voice_seed_gaps(voices, seed))
     # Migrate each old profile independently; never overwrite a new language dictionary.
     previous = config.get("pronunciation", {})
     # AstrBot may already have inserted new schema defaults while loading an old file.
@@ -180,6 +213,9 @@ def snapshot(config):
 def migrate_voices(config):
     """Move the pre-1.2 model/voice fields into the voice rules group once.
 
+    Only blank voice fields are filled from the old groups, so a value the user
+    already stored is kept as it is.
+
     Returns:
         True when the stored configuration was rewritten.
     """
@@ -192,7 +228,7 @@ def migrate_voices(config):
             isinstance(connection, dict)
             and any(key in connection for key in ("model", "voice"))
         )
-        or (_voices_untouched(config.get("voices")) and bool(seed))
+        or bool(_voice_seed_gaps(config.get("voices"), seed))
     )
     if not stale:
         return False
@@ -318,23 +354,42 @@ def saved_voice_settings(config, name):
 
 
 def _split_legacy_patch(patch):
-    """Accept the pre-1.2 dashboard shape and fold it into the voice options."""
+    """Accept the pre-1.2 dashboard shape and fold it into the voice options.
+
+    Only fields really present in the patch are written, so an unrelated update
+    never clears a configured pair, and an unknown key is reported instead of
+    being ignored. A lone legacy model (or voice) clears its stale counterpart
+    instead of pairing a new model with the old voice.
+    """
     patch = dict(patch)
     updates = {}
     languages = patch.pop("language_models", None)
     if languages is not None:
         if not isinstance(languages, dict):
             raise TTSError("按语言选择模型设置格式错误。")
-        updates["default_per_language"] = bool(languages.get("enabled", False))
+        allowed = {"enabled"} | {
+            f"{code}_{key}" for code in LANGUAGE_CODES for key in ("model", "voice")
+        }
+        if set(languages) - allowed:
+            raise TTSError("按语言选择模型包含未知设置。")
+        if "enabled" in languages:
+            enabled = languages["enabled"]
+            if type(enabled) is not bool:
+                raise TTSError("按语言选择模型开关必须为布尔值。")
+            updates["default_per_language"] = enabled
         for code in LANGUAGE_CODES:
-            updates[f"default_{code}_model"] = languages.get(f"{code}_model", "")
-            updates[f"default_{code}_voice"] = languages.get(f"{code}_voice", "")
+            for key in ("model", "voice"):
+                field = f"{code}_{key}"
+                if field in languages:
+                    updates[f"default_{field}"] = languages[field]
     connection = patch.get("connection")
     if isinstance(connection, dict) and set(connection) & {"model", "voice"}:
         connection = dict(connection)
+        pair = {
+            key: connection.pop(key) for key in ("model", "voice") if key in connection
+        }
         for key in ("model", "voice"):
-            if key in connection:
-                updates[f"default_{key}"] = connection.pop(key)
+            updates[f"default_{key}"] = pair.get(key, "")
         patch["connection"] = connection
     return patch, updates
 

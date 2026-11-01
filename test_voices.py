@@ -26,6 +26,17 @@ def rule(**overrides):
     return entry
 
 
+def defaults():
+    """A clean install config built from the schema, without a plugin instance."""
+    return {
+        group: {
+            key: copy.deepcopy(field["default"])
+            for key, field in meta["items"].items()
+        }
+        for group, meta in settings.SCHEMA.items()
+    }
+
+
 class RuleParsingTests(unittest.TestCase):
     def test_rules_are_normalized_and_keep_one_entry_per_persona(self):
         parsed = parse_rules(
@@ -215,12 +226,14 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(seeded["default_zh_model"], "legacy-zh-model")
         self.assertEqual(seeded["default_zh_voice"], "legacy-zh-voice")
 
-    def test_existing_rules_are_never_overwritten_by_the_legacy_seed(self):
+    def test_existing_rules_are_kept_while_the_legacy_pair_fills_the_defaults(self):
         config = self.legacy_config()
         config["voices"]["rules_json"] = json.dumps([rule()])
         seeded = settings.snapshot(config)["voices"]
         self.assertEqual(json.loads(seeded["rules_json"])[0]["persona"], "kuchiba-chisa")
-        self.assertEqual(seeded["default_voice"], "")
+        # The stored rules stay untouched; only the blank default pair is filled.
+        self.assertEqual(seeded["default_model"], "legacy-model")
+        self.assertEqual(seeded["default_voice"], "legacy-voice")
 
     def test_migrate_voices_writes_once_and_removes_legacy_keys(self):
         config = self.legacy_config()
@@ -298,6 +311,144 @@ class MigrationTests(unittest.TestCase):
         config["profiles"] = {"active_id": "default", "entries_json": "[]"}
         self.assertFalse(settings.migrate_voices(config))
         self.assertEqual(config["voices"]["default_voice"], "")
+
+
+class LegacyVoiceMigrationTests(unittest.TestCase):
+    """Regressions for 1.1.x voice defaults that the migration used to drop."""
+
+    def legacy_config(self, rules=(), **voices):
+        config = defaults()
+        config["connection"]["model"] = "legacy-model"
+        config["connection"]["voice"] = "legacy-voice"
+        config["language_models"] = {
+            "enabled": True,
+            "zh_model": "legacy-zh-model",
+            "zh_voice": "legacy-zh-voice",
+            "en_model": "legacy-en-model",
+            "en_voice": "legacy-en-voice",
+            "ja_model": "legacy-ja-model",
+            "ja_voice": "legacy-ja-voice",
+        }
+        config["voices"]["rules_json"] = json.dumps(list(rules))
+        config["voices"].update(voices)
+        return config
+
+    def test_rules_and_the_legacy_pair_both_survive_the_migration(self):
+        config = self.legacy_config([rule()])
+        self.assertTrue(settings.migrate_voices(config))
+        voices = config["voices"]
+        self.assertEqual(voices["default_model"], "legacy-model")
+        self.assertEqual(voices["default_voice"], "legacy-voice")
+        self.assertEqual(json.loads(voices["rules_json"])[0]["voice"], "voice-a")
+        self.assertNotIn("model", config["connection"])
+        self.assertNotIn("voice", config["connection"])
+        self.assertFalse(settings.migrate_voices(config))
+
+    def test_a_configured_default_pair_is_never_replaced_by_the_legacy_pair(self):
+        config = self.legacy_config(
+            default_model="user-model", default_voice="user-voice"
+        )
+        self.assertTrue(settings.migrate_voices(config))
+        self.assertEqual(config["voices"]["default_model"], "user-model")
+        self.assertEqual(config["voices"]["default_voice"], "user-voice")
+        self.assertNotIn("voice", config["connection"])
+
+    def test_a_chosen_default_model_without_a_voice_is_left_alone(self):
+        # The old "voices untouched" check ignored default_model and replaced it.
+        config = self.legacy_config(default_model="user-model")
+        self.assertTrue(settings.migrate_voices(config))
+        self.assertEqual(config["voices"]["default_model"], "user-model")
+        self.assertEqual(config["voices"]["default_voice"], "")
+
+    def test_a_partly_configured_language_pair_keeps_both_of_its_halves(self):
+        config = self.legacy_config(
+            default_en_model="user-en-model", default_en_voice="user-en-voice"
+        )
+        self.assertTrue(settings.migrate_voices(config))
+        voices = config["voices"]
+        self.assertEqual(voices["default_en_model"], "user-en-model")
+        self.assertEqual(voices["default_en_voice"], "user-en-voice")
+        self.assertEqual(voices["default_zh_model"], "legacy-zh-model")
+        self.assertEqual(voices["default_ja_voice"], "legacy-ja-voice")
+        self.assertTrue(voices["default_per_language"])
+
+    def test_blank_language_pairs_gain_the_legacy_values_and_the_flag(self):
+        config = self.legacy_config()
+        self.assertFalse(config["voices"]["default_per_language"])
+        self.assertTrue(settings.migrate_voices(config))
+        voices = config["voices"]
+        self.assertTrue(voices["default_per_language"])
+        for code in ("zh", "en", "ja"):
+            self.assertEqual(voices[f"default_{code}_model"], f"legacy-{code}-model")
+            self.assertEqual(voices[f"default_{code}_voice"], f"legacy-{code}-voice")
+
+    def test_the_language_flag_follows_the_pairs_actually_filled(self):
+        config = self.legacy_config()
+        config["language_models"]["enabled"] = False
+        self.assertTrue(settings.migrate_voices(config))
+        self.assertTrue(config["voices"]["default_per_language"])
+
+
+class LegacyPatchTests(unittest.TestCase):
+    """Regressions for the pre-1.2 dashboard payload the save path still accepts."""
+
+    def config(self, **voices):
+        config = defaults()
+        config["voices"].update(voices)
+        return config
+
+    def test_a_language_switch_that_is_not_a_boolean_is_rejected(self):
+        for value in ("false", "0", 0, 1, None):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(TTSError, "布尔值"):
+                    settings.validate_draft(
+                        self.config(), {"language_models": {"enabled": value}}
+                    )
+
+    def test_a_switch_only_patch_keeps_the_configured_language_pairs(self):
+        config = self.config(
+            default_en_model="en-model", default_en_voice="en-voice"
+        )
+        candidate = settings.validate_draft(
+            config, {"language_models": {"enabled": True}}
+        )
+        self.assertEqual(candidate["voices"]["default_en_model"], "en-model")
+        self.assertEqual(candidate["voices"]["default_en_voice"], "en-voice")
+        self.assertTrue(candidate["voices"]["default_per_language"])
+
+    def test_unknown_old_fields_are_rejected(self):
+        for languages in (
+            {"fr_model": "m"},
+            {"zh_modal": "m"},
+            {"voice_map": {}},
+            {"enabled": True, "ja_voice_id": "v"},
+        ):
+            with self.subTest(languages=languages):
+                with self.assertRaisesRegex(TTSError, "未知"):
+                    settings.validate_draft(
+                        self.config(), {"language_models": languages}
+                    )
+
+    def test_a_lone_old_model_clears_the_stale_voice(self):
+        config = self.config(default_model="old-model", default_voice="old-voice")
+        candidate = settings.validate_draft(
+            config, {"connection": {"model": "new-model"}}
+        )
+        self.assertEqual(candidate["voices"]["default_model"], "new-model")
+        self.assertEqual(candidate["voices"]["default_voice"], "")
+        self.assertNotIn("model", candidate["connection"])
+
+    def test_an_empty_old_patch_writes_nothing(self):
+        config = self.config(default_zh_model="zh-model", default_zh_voice="zh-voice")
+        candidate = settings.validate_draft(config, {"language_models": {}})
+        self.assertEqual(candidate["voices"], settings.snapshot(config)["voices"])
+        self.assertEqual(settings._split_legacy_patch({}), ({}, {}))
+        self.assertEqual(settings._split_legacy_patch({"language_models": {}}), ({}, {}))
+        patch, updates = settings._split_legacy_patch(
+            {"connection": {"model": "m", "voice": "v"}}
+        )
+        self.assertEqual(patch, {"connection": {}})
+        self.assertEqual(updates, {"default_model": "m", "default_voice": "v"})
 
 
 if __name__ == "__main__":
