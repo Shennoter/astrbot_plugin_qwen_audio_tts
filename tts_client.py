@@ -310,16 +310,25 @@ def synthesize_http(base, api_key, payload, timeout=60):
     return normalize_audio(content, payload["input"]["format"])
 
 
-def models_url(base):
-    """Return the OpenAI-compatible model list URL for a validated API base.
+def models_urls(base):
+    """Return candidate model list URLs for a validated API base.
+
+    The workspace gateway exposes the catalogue on the OpenAI-compatible
+    ``/compatible-mode/v1/models`` route; OpenAI-compatible proxies use
+    ``/v1/models`` and DashScope-style hosts may answer on ``/models``.
 
     Args:
         base: Validated workspace API base URL ending in ``/api/v1``.
 
     Returns:
-        The model list URL sharing the workspace hostname.
+        Candidate URLs in request order.
     """
-    return f"https://{urlparse(base).hostname}/v1/models"
+    host = urlparse(base).hostname
+    return [
+        f"https://{host}/compatible-mode/v1/models",
+        f"https://{host}/v1/models",
+        base.rstrip("/") + "/models",
+    ]
 
 
 def _model_entries(body):
@@ -343,10 +352,9 @@ def _model_entries(body):
 def list_models(base, api_key, timeout=20):
     """List the model ids the configured credential can reach.
 
-    The synthesis route lives under ``/api/v1`` while gateways usually expose the
-    catalogue on the OpenAI-compatible ``/v1/models`` route, so both orders are
-    tried. This is a convenience lookup only: callers keep accepting any model id
-    typed by hand.
+    The synthesis route lives under ``/api/v1`` while the catalogue is served on an
+    OpenAI-compatible route, so several candidates are tried in order. This is a
+    convenience lookup only: callers keep accepting any model id typed by hand.
 
     Args:
         base: Validated workspace API base URL.
@@ -364,10 +372,10 @@ def list_models(base, api_key, timeout=20):
     headers = {
         "Authorization": "Bearer " + str(api_key).strip(),
         "Accept": "application/json",
-        "User-Agent": "AstrBot-Qwen-Audio-Plugin/1.2.2",
+        "User-Agent": "AstrBot-Qwen-Audio-Plugin/1.2.4",
     }
     reasons = []
-    for url in (models_url(base), base.rstrip("/") + "/models"):
+    for url in models_urls(base):
         try:
             request = Request(url, headers=headers)
             with build_opener(NoRedirect()).open(request, timeout=timeout) as response:

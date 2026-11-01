@@ -325,7 +325,7 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(client.TTSError):
             client.normalize_audio(b"<html>error</html>", "wav")
 
-    def test_model_list_prefers_v1_then_falls_back_and_sorts(self):
+    def test_model_list_tries_compatible_mode_then_fallbacks(self):
         missing = Mock()
         missing.open.side_effect = HTTPError(
             "https://example", 404, "missing", {}, io.BytesIO(b"{}")
@@ -346,7 +346,9 @@ class ClientTests(unittest.TestCase):
             )
         )
         found.open.return_value.__exit__ = Mock(return_value=False)
-        with patch.object(client, "build_opener", side_effect=[missing, found]):
+        with patch.object(
+            client, "build_opener", side_effect=[missing, missing, found]
+        ):
             models = client.list_models(
                 client.workspace_base("ws-example"), "private-key"
             )
@@ -355,15 +357,20 @@ class ClientTests(unittest.TestCase):
             ["a-model", "b-model", "qwen-audio-3.1-tts-plus"],
         )
         self.assertEqual(models[2]["owned_by"], "task")
-        first = missing.open.call_args.args[0]
+        first, second = [call.args[0] for call in missing.open.call_args_list]
         self.assertEqual(
             first.full_url,
-            "https://ws-example.cn-beijing.maas.aliyuncs.com/v1/models",
+            "https://ws-example.cn-beijing.maas.aliyuncs.com"
+            "/compatible-mode/v1/models",
         )
         self.assertEqual(first.get_header("Authorization"), "Bearer private-key")
-        second = found.open.call_args.args[0]
         self.assertEqual(
             second.full_url,
+            "https://ws-example.cn-beijing.maas.aliyuncs.com/v1/models",
+        )
+        third = found.open.call_args.args[0]
+        self.assertEqual(
+            third.full_url,
             "https://ws-example.cn-beijing.maas.aliyuncs.com/api/v1/models",
         )
 

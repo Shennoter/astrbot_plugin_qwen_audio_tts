@@ -1,5 +1,12 @@
 # 更新日志
 
+## 1.2.4
+
+- “获取模型列表”优先请求业务空间的 OpenAI 兼容目录 `https://<业务空间域名>/compatible-mode/v1/models`，失败再回退 `/v1/models` 与 `/api/v1/models`；官方百炼业务空间现在也能取到模型清单。
+- 实测该目录返回 184 个模型（语音相关 11 个），但不含 `qwen-audio-3.1-tts-flash` 这类专用合成模型；下拉仅作候选，仍以手填模型 ID 为准。
+- 文档同步更正先前“官方域名取不到模型列表”的结论。
+- 补充候选地址顺序与回退的离线回归。
+
 ## 1.2.3
 
 - 新增“获取音色列表”：调用 `POST /api/v1/services/audio/tts/customization`（`model=voice-enrollment`、`input.action=list_voice`，自动翻页）读取该业务空间通过 API 创建的音色，作为音色下拉的候选。
