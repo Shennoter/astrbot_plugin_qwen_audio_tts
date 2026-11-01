@@ -380,6 +380,82 @@ class ClientTests(unittest.TestCase):
         self.assertIn("手动填写", str(caught.exception))
         self.assertNotIn("private-key", str(caught.exception))
 
+    def test_voice_list_reads_pages_and_validates_payload(self):
+        page = Mock()
+        page.open.return_value.__enter__ = Mock(
+            return_value=io.BytesIO(
+                json.dumps(
+                    {
+                        "output": {
+                            "voice_list": [
+                                {
+                                    "voice_id": "qwen-audio-3.1-tts-flash-bailian-abc",
+                                    "target_model": "qwen-audio-3.1-tts-flash",
+                                    "status": "OK",
+                                },
+                                {"voice_id": ""},
+                                "ignored",
+                            ],
+                            "total_count": 1,
+                        }
+                    }
+                ).encode()
+            )
+        )
+        page.open.return_value.__exit__ = Mock(return_value=False)
+        with patch.object(client, "build_opener", return_value=page):
+            voices = client.list_voices(
+                client.workspace_base("ws-example"), "private-key"
+            )
+        self.assertEqual(
+            voices,
+            [
+                {
+                    "voice_id": "qwen-audio-3.1-tts-flash-bailian-abc",
+                    "target_model": "qwen-audio-3.1-tts-flash",
+                    "status": "OK",
+                }
+            ],
+        )
+        request = page.open.call_args.args[0]
+        self.assertEqual(
+            request.full_url,
+            "https://ws-example.cn-beijing.maas.aliyuncs.com/api/v1"
+            "/services/audio/tts/customization",
+        )
+        body = json.loads(request.data)
+        self.assertEqual(body["model"], "voice-enrollment")
+        self.assertEqual(body["input"]["action"], "list_voice")
+        self.assertEqual(request.get_header("Authorization"), "Bearer private-key")
+
+    def test_voice_list_requires_key_and_surfaces_failures(self):
+        with self.assertRaises(client.TTSError):
+            client.list_voices(client.workspace_base("ws-example"), "")
+        service = Mock()
+        service.open.side_effect = HTTPError(
+            "https://example",
+            403,
+            "denied",
+            {},
+            io.BytesIO(b'{"code":"AccessDenied","message":"private-key denied"}'),
+        )
+        with (
+            patch.object(client, "build_opener", return_value=service),
+            self.assertRaises(client.TTSError) as caught,
+        ):
+            client.list_voices(client.workspace_base("ws-example"), "private-key")
+        self.assertNotIn("private-key", str(caught.exception))
+        broken = Mock()
+        broken.open.return_value.__enter__ = Mock(
+            return_value=io.BytesIO(b'{"output":{}}')
+        )
+        broken.open.return_value.__exit__ = Mock(return_value=False)
+        with (
+            patch.object(client, "build_opener", return_value=broken),
+            self.assertRaises(client.TTSError),
+        ):
+            client.list_voices(client.workspace_base("ws-example"), "private-key")
+
 
 class PluginTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -1147,22 +1223,21 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
     async def test_web_api_registration_and_older_astrbot_fallback(self):
         await self.plugin.initialize()
         routes = self.context.register_web_api.call_args_list
-        self.assertEqual(len(routes), 8)
+        self.assertEqual(len(routes), 9)
         self.assertEqual(
             routes[0].args[0], "/astrbot_plugin_qwen_audio_tts/preview/settings"
         )
         self.assertEqual(routes[1].args[2], ["POST"])
-        self.assertIn(
-            "/astrbot_plugin_qwen_audio_tts/voices/models",
-            [route.args[0] for route in routes],
-        )
+        registered = [route.args[0] for route in routes]
+        self.assertIn("/astrbot_plugin_qwen_audio_tts/voices/models", registered)
+        self.assertIn("/astrbot_plugin_qwen_audio_tts/voices/list", registered)
         # Missing public Web API leaves normal voice features usable.
         with patch.dict(
             sys.modules,
             {"astrbot.api": types.ModuleType("astrbot.api"), "astrbot.api.web": None},
         ):
             await self.plugin.initialize()
-        self.assertEqual(self.context.register_web_api.call_count, 8)
+        self.assertEqual(self.context.register_web_api.call_count, 9)
 
 
 if __name__ == "__main__":

@@ -452,6 +452,8 @@ function App() {
   const [jobs, setJobs] = useState([]);
   const [modelOptions, setModelOptions] = useState([]);
   const [modelBusy, setModelBusy] = useState(false);
+  const [remoteVoices, setRemoteVoices] = useState([]);
+  const [voiceBusy, setVoiceBusy] = useState(false);
   const [jobError, setJobError] = useState("");
   const [querying, setQuerying] = useState(null);
   const audioRef = useRef(null);
@@ -740,6 +742,30 @@ function App() {
       setModelBusy(false);
     }
   }
+  async function loadVoices() {
+    if (voiceBusy) return;
+    setVoiceBusy(true);
+    try {
+      const value = await bridge.apiGet("voices/list");
+      const list = (value.voices || []).filter(
+        (item) => typeof item?.voice_id === "string" && item.voice_id,
+      );
+      setRemoteVoices(list);
+      notify(
+        list.length
+          ? `已获取 ${list.length} 支服务端音色；音色下拉会按所选模型筛选，仍可手动填写。`
+          : "该业务空间没有通过 API 创建的音色，请手动填写音色 ID。",
+        list.length ? "success" : "warning",
+      );
+    } catch (error) {
+      notify(
+        `${error.message || "获取音色列表失败"}；可直接手动填写音色 ID。`,
+        "error",
+      );
+    } finally {
+      setVoiceBusy(false);
+    }
+  }
   async function queryJob(job) {
     setQuerying(job.job_id);
     try {
@@ -806,30 +832,40 @@ function App() {
   const voiceSuggestions = (model) => {
     const chosen = [];
     const seen = new Set();
-    const add = (id, name) => {
+    const add = (id, name, note) => {
       const voice = (id || "").trim();
       if (!voice || seen.has(voice) || !voiceModelMatches(voice, model)) return;
       seen.add(voice);
-      chosen.push({
-        id: voice,
-        label: name && name !== voice ? `${name}（${voice}）` : voice,
-      });
+      const label = name && name !== voice ? `${name}（${voice}）` : voice;
+      chosen.push({ id: voice, label: note ? `${label} · ${note}` : label });
     };
+    remoteVoices.forEach((entry) =>
+      add(
+        entry.voice_id,
+        "",
+        entry.status && entry.status !== "OK" ? entry.status : "",
+      ),
+    );
     libraryVoices.forEach((entry) => add(entry.voice, entry.name));
     usedVoices.forEach((voice) => add(voice, ""));
     return {
       options: chosen,
       library: libraryVoices.length,
       used: usedVoices.length,
+      remote: remoteVoices.length,
     };
   };
   const voiceHint = (model, fallback) => {
-    const { options, library, used } = voiceSuggestions(model);
-    if (!library && !used)
-      return "音色库为空：可直接填写音色 ID，或先在“音色复刻”页创建音色。";
-    if (!model) return `共 ${options.length} 支可选音色；填写模型后按模型筛选。`;
+    const { options, library, used, remote } = voiceSuggestions(model);
+    if (!remote && !library && !used)
+      return "没有可列举的音色：可直接填写，或先点“获取音色列表”/在“音色复刻”页创建音色。";
+    if (!model)
+      return `共 ${options.length} 支可选音色${remote ? `（服务端 ${remote} 支）` : ""}；填写模型后按模型筛选。`;
     if (!options.length) return `没有模型 ${model} 的音色，仍可手动填写。`;
-    return (fallback ? `${fallback}；` : "") + `${options.length} 支匹配。`;
+    return (
+      (fallback ? `${fallback}；` : "") +
+      `${options.length} 支匹配${remote ? `（服务端共 ${remote} 支）` : ""}。`
+    );
   };
   const comboField = ({
     fieldKey,
@@ -844,6 +880,7 @@ function App() {
       key={fieldKey}
       freeSolo
       size="small"
+      sx={{ minWidth: 0, flex: 1, width: "100%" }}
       options={options}
       value={value || null}
       disabled={busy}
@@ -865,10 +902,19 @@ function App() {
       }}
       renderOption={(props, option) => {
         const { key, ...rest } = props;
+        const text = option.label || option.id;
+        // Voice ids are long: keep the row on one line and expose the full
+        // value through the tooltip instead of stretching the popup.
+        const short =
+          text.length > 48 ? `${text.slice(0, 28)}…${text.slice(-16)}` : text;
         return (
-          <Box component="li" key={key} {...rest}>
-            <Typography variant="body2" sx={{ wordBreak: "break-all" }}>
-              {option.label || option.id}
+          <Box component="li" key={key} {...rest} title={text}>
+            <Typography
+              variant="body2"
+              noWrap
+              sx={{ minWidth: 0, fontSize: 13 }}
+            >
+              {short}
             </Typography>
           </Box>
         );
@@ -879,6 +925,7 @@ function App() {
           label={label}
           placeholder={placeholder}
           helperText={helper}
+          sx={{ "& input": { textOverflow: "ellipsis" } }}
         />
       )}
     />
@@ -1172,7 +1219,7 @@ function App() {
       <Box sx={{ mt: "auto", pt: 4, ml: 1 }}>
         <Chip
           size="small"
-          label="v1.2.2"
+          label="v1.2.3"
           variant="outlined"
           sx={{ color: "text.secondary", borderColor: "divider" }}
         />
@@ -1635,13 +1682,21 @@ function App() {
                           >
                             {modelBusy ? "获取中…" : "获取模型列表"}
                           </Button>
+                          <Button
+                            size="small"
+                            startIcon={<RefreshIcon />}
+                            disabled={voiceBusy || busy}
+                            onClick={loadVoices}
+                          >
+                            {voiceBusy ? "获取中…" : "获取音色列表"}
+                          </Button>
                         </Stack>
                         <Typography
                           variant="caption"
                           color="text.secondary"
                           sx={{ display: "block", mb: 2 }}
                         >
-                          所有人格规则都没有命中时使用；未配置时朗读会提示到本页填写。音色 ID 以模型名开头，“获取模型列表”后模型可下拉选择，音色下拉只列出与该模型匹配的已保存音色，两者都仍可手动输入。
+                          所有人格规则都没有命中时使用；未配置时朗读会提示到本页填写。音色 ID 以模型名开头：“获取音色列表”读取该业务空间通过 API 创建的音色，“获取模型列表”读取可用模型，两者都可下拉选择，仍支持手动输入；音色下拉会按当前模型筛选。
                         </Typography>
                         <Stack spacing={2.5}>
                           {field("voices", "enabled")}
@@ -1693,7 +1748,7 @@ function App() {
                         </Stack>
                         <Typography variant="caption" color="text.secondary">
                           AstrBot
-                          每次朗读时读取当前会话人格；同一人格只能有一条规则，模型与音色必须成对填写。模型可取下拉（需先“获取模型列表”），音色按“模型 ID 前缀”筛选音色库，两者都仍可手填。人格在
+                          每次朗读时读取当前会话人格；同一人格只能有一条规则，模型与音色必须成对填写。模型与音色都可下拉（先点“获取模型列表”“获取音色列表”），音色按“模型 ID 前缀”筛选，两者都仍可手填。人格在
                           AstrBot 人格管理中创建，会话里用 /persona 切换。
                         </Typography>
                         {!voiceRules && (

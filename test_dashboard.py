@@ -948,6 +948,34 @@ class VoiceModelsEndpointTests(h.PluginTests):
         self.assertEqual(code, 400)
         self.assertIn("无法获取模型列表", payload["message"])
 
+    async def test_voice_list_endpoint_returns_api_voices(self):
+        self.request.username = None
+        self.assertEqual((await self.plugin.voice_list())[1], 401)
+        self.request.username = "admin"
+        with patch.object(
+            panel,
+            "list_voices",
+            return_value=[
+                {
+                    "voice_id": "qwen-audio-3.1-tts-flash-bailian-abc",
+                    "target_model": "qwen-audio-3.1-tts-flash",
+                    "status": "OK",
+                }
+            ],
+        ):
+            payload, code = await self.plugin.voice_list()
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(
+            payload["voices"][0]["voice_id"], "qwen-audio-3.1-tts-flash-bailian-abc"
+        )
+
+    async def test_voice_list_endpoint_requires_credentials(self):
+        self.config["connection"]["workspace"] = ""
+        payload, code = await self.plugin.voice_list()
+        self.assertEqual(code, 400)
+        self.assertIn("业务空间", payload["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -72,7 +72,7 @@ MARKER = "qwen_audio_voice_handled"
 PERSONA_MARKER = "qwen_audio_persona"
 
 
-@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "1.2.2")
+@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "1.2.3")
 class QwenAudioVoicePlugin(PanelMixin, Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -140,6 +140,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             ("preview/generate", self.preview_generate, ["POST"]),
             ("settings/save", self.save_settings, ["POST"]),
             ("voices/models", self.voice_models, ["GET"]),
+            ("voices/list", self.voice_list, ["GET"]),
             ("cloning/upload", self.cloning_upload, ["POST"]),
             ("cloning/create", self.cloning_create, ["POST"]),
             ("cloning/jobs", self.cloning_jobs, ["GET"]),
