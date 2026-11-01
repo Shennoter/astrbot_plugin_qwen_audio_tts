@@ -779,11 +779,12 @@ function App() {
   );
   const savedVoices = savedVoiceNames(draft);
   const defaultPair = draft ? defaultVoicePair(draft.voices) : ["", ""];
+  const voiceConfig = draft?.voices || {};
   const libraryVoices = savedVoiceEntries(draft);
   const usedVoices = uniqueStrings([
-    draft.voices.default_voice,
-    ...(draft.voices.default_per_language
-      ? voiceLanguages.map(([code]) => draft.voices[`default_${code}_voice`])
+    voiceConfig.default_voice,
+    ...(voiceConfig.default_per_language
+      ? voiceLanguages.map(([code]) => voiceConfig[`default_${code}_voice`])
       : []),
     ...(voiceRules || []).flatMap((rule) => [
       rule.voice,
@@ -793,9 +794,9 @@ function App() {
   const modelSuggestions = () =>
     uniqueStrings([
       ...modelOptions,
-      draft.voices.default_model,
-      ...(draft.voices.default_per_language
-        ? voiceLanguages.map(([code]) => draft.voices[`default_${code}_model`])
+      voiceConfig.default_model,
+      ...(voiceConfig.default_per_language
+        ? voiceLanguages.map(([code]) => voiceConfig[`default_${code}_model`])
         : []),
       ...(voiceRules || []).flatMap((rule) => [
         rule.model,
@@ -981,7 +982,7 @@ function App() {
       return comboField({
         fieldKey: `voices.${name}`,
         label: voiceSchemaMeta(name).description,
-        value: draft.voices[name],
+        value: voiceConfig[name],
         onValue: (next) => change("voices", name, next),
         options: modelSuggestions(),
         helper: modelOptions.length
@@ -989,13 +990,13 @@ function App() {
           : "可手填模型 ID；点上方“获取模型列表”后可从下拉选择。",
       });
     const model =
-      draft.voices[name.replace(/voice$/, "model")] ||
-      (name === "default_voice" ? "" : draft.voices.default_model) ||
+      voiceConfig[name.replace(/voice$/, "model")] ||
+      (name === "default_voice" ? "" : voiceConfig.default_model) ||
       "";
     return comboField({
       fieldKey: `voices.${name}`,
       label: voiceSchemaMeta(name).description,
-      value: draft.voices[name],
+      value: voiceConfig[name],
       onValue: (next) => change("voices", name, next),
       options: voiceSuggestions(model).options,
       helper: voiceHint(model),
