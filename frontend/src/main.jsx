@@ -458,8 +458,6 @@ function App() {
     "先保存 API Key 和业务空间完整域名，再上传参考录音。",
   );
   const [jobs, setJobs] = useState([]);
-  const [modelOptions, setModelOptions] = useState([]);
-  const [modelBusy, setModelBusy] = useState(false);
   const [remoteVoices, setRemoteVoices] = useState([]);
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [jobError, setJobError] = useState("");
@@ -724,32 +722,6 @@ function App() {
       setJobError(error.message);
     }
   }
-  async function loadModels() {
-    if (modelBusy) return;
-    setModelBusy(true);
-    try {
-      const value = await bridge.apiGet("voices/models");
-      const ids = (value.models || [])
-        .map((item) => (typeof item === "string" ? item : item?.id))
-        .filter((id) => typeof id === "string" && id);
-      // Prefer speech models, but never hide a list that carries no keyword hit.
-      const speech = ids.filter((id) => /tts|audio|voice|speech/i.test(id));
-      setModelOptions(speech.length ? speech : ids);
-      notify(
-        ids.length
-          ? `已获取 ${ids.length} 个模型，其中 ${speech.length} 个疑似语音模型；模型输入框会给出候选，仍可手动填写。`
-          : "服务端没有返回模型，请手动填写模型 ID。",
-        ids.length ? "success" : "warning",
-      );
-    } catch (error) {
-      notify(
-        `${error.message || "获取模型列表失败"}；可直接手动填写模型 ID。`,
-        "error",
-      );
-    } finally {
-      setModelBusy(false);
-    }
-  }
   async function loadVoices() {
     if (voiceBusy) return;
     setVoiceBusy(true);
@@ -825,18 +797,6 @@ function App() {
       ...voiceLanguages.map(([code]) => rule[`${code}_voice`]),
     ]),
   ]);
-  const modelSuggestions = () =>
-    uniqueStrings([
-      ...modelOptions,
-      voiceConfig.default_model,
-      ...(voiceConfig.default_per_language
-        ? voiceLanguages.map(([code]) => voiceConfig[`default_${code}_model`])
-        : []),
-      ...(voiceRules || []).flatMap((rule) => [
-        rule.model,
-        ...voiceLanguages.map(([code]) => rule[`${code}_model`]),
-      ]),
-    ]).map((id) => ({ id, label: id }));
   const voiceSuggestions = (model) => {
     const chosen = [];
     const seen = new Set();
@@ -963,14 +923,16 @@ function App() {
         spacing={2}
         key={prefix || "default"}
       >
-        {comboField({
-          fieldKey: `rule-${index}-${modelKey}`,
-          label: `${label}模型`,
-          value: model,
-          onValue: (next) => updateVoiceRule(index, { [modelKey]: next }),
-          options: modelSuggestions(),
-          helper: modelOptions.length ? "可下拉选择或手填。" : "可手填模型 ID。",
-        })}
+        <TextField
+          size="small"
+          fullWidth
+          label={`${label}模型`}
+          value={rule[modelKey] || ""}
+          disabled={busy}
+          onChange={(event) =>
+            updateVoiceRule(index, { [modelKey]: event.target.value })
+          }
+        />
         {comboField({
           fieldKey: `rule-${index}-${voiceKey}`,
           label: `${label}音色 ID`,
@@ -1029,17 +991,6 @@ function App() {
       : data?.profiles.find((p) => p.id === sourceProfileId)?.api_key_set;
   const voiceSchemaMeta = (name) => data.schema.voices.items[name] || {};
   const voiceField = (name) => {
-    if (/(^|_)model$/.test(name))
-      return comboField({
-        fieldKey: `voices.${name}`,
-        label: voiceSchemaMeta(name).description,
-        value: voiceConfig[name],
-        onValue: (next) => change("voices", name, next),
-        options: modelSuggestions(),
-        helper: modelOptions.length
-          ? `已获取 ${modelOptions.length} 个模型，可下拉选择或手填。`
-          : "可手填模型 ID；点上方“获取模型列表”后可从下拉选择。",
-      });
     const model =
       voiceConfig[name.replace(/voice$/, "model")] ||
       (name === "default_voice" ? "" : voiceConfig.default_model) ||
@@ -1055,8 +1006,7 @@ function App() {
     });
   };
   const field = (group, name, compact = false) =>
-    group === "voices" &&
-    (/(^|_)model$/.test(name) || /(^|_)voice$/.test(name)) ? (
+    group === "voices" && /(^|_)voice$/.test(name) ? (
       <Box key={`${group}.${name}`}>{voiceField(name)}</Box>
     ) : ["delivery", "translation"].includes(group) &&
       name === "provider_id" ? (
@@ -1223,7 +1173,7 @@ function App() {
       <Box sx={{ mt: "auto", pt: 4, ml: 1 }}>
         <Chip
           size="small"
-          label="v1.2.5"
+          label="v1.2.6"
           variant="outlined"
           sx={{ color: "text.secondary", borderColor: "divider" }}
         />
@@ -1681,14 +1631,6 @@ function App() {
                           <Button
                             size="small"
                             startIcon={<RefreshIcon />}
-                            disabled={modelBusy || busy}
-                            onClick={loadModels}
-                          >
-                            {modelBusy ? "获取中…" : "获取模型列表"}
-                          </Button>
-                          <Button
-                            size="small"
-                            startIcon={<RefreshIcon />}
                             disabled={voiceBusy || busy}
                             onClick={loadVoices}
                           >
@@ -1700,7 +1642,7 @@ function App() {
                           color="text.secondary"
                           sx={{ display: "block", mb: 2 }}
                         >
-                          所有人格规则都没有命中时使用；未配置时朗读会提示到本页填写。音色 ID 以模型名开头：“获取音色列表”读取该业务空间通过 API 创建的音色，“获取模型列表”读取可用模型，两者都可下拉选择，仍支持手动输入；音色下拉会按当前模型筛选。
+                          所有人格规则都没有命中时使用；未配置时朗读会提示到本页填写。音色 ID 以模型名开头：“获取音色列表”读取该业务空间通过 API 创建的音色，音色可下拉选择也可手填，并按当前模型筛选；模型 ID 直接手填（官方没有可用的模型清单接口）。
                         </Typography>
                         <Stack spacing={2.5}>
                           {field("voices", "enabled")}
@@ -1752,7 +1694,7 @@ function App() {
                         </Stack>
                         <Typography variant="caption" color="text.secondary">
                           AstrBot
-                          每次朗读时读取当前会话人格；同一人格只能有一条规则，模型与音色必须成对填写。模型与音色都可下拉（先点“获取模型列表”“获取音色列表”），音色按“模型 ID 前缀”筛选，两者都仍可手填。人格在
+                          每次朗读时读取当前会话人格；同一人格只能有一条规则，模型与音色必须成对填写。模型手填，音色可下拉（先点“获取音色列表”）或手填，并按“模型 ID 前缀”筛选。人格在
                           AstrBot 人格管理中创建，会话里用 /persona 切换。
                         </Typography>
                         {!voiceRules && (

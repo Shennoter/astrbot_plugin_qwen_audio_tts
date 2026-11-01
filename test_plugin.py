@@ -325,68 +325,6 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(client.TTSError):
             client.normalize_audio(b"<html>error</html>", "wav")
 
-    def test_model_list_tries_compatible_mode_then_fallbacks(self):
-        missing = Mock()
-        missing.open.side_effect = HTTPError(
-            "https://example", 404, "missing", {}, io.BytesIO(b"{}")
-        )
-        found = Mock()
-        found.open.return_value.__enter__ = Mock(
-            return_value=io.BytesIO(
-                json.dumps(
-                    {
-                        "data": [
-                            {"id": "qwen-audio-3.1-tts-plus", "owned_by": "task"},
-                            {"id": "b-model"},
-                            "a-model",
-                            {"id": "qwen-audio-3.1-tts-plus"},
-                        ]
-                    }
-                ).encode()
-            )
-        )
-        found.open.return_value.__exit__ = Mock(return_value=False)
-        with patch.object(
-            client, "build_opener", side_effect=[missing, missing, found]
-        ):
-            models = client.list_models(
-                client.workspace_base("ws-example"), "private-key"
-            )
-        self.assertEqual(
-            [item["id"] for item in models],
-            ["a-model", "b-model", "qwen-audio-3.1-tts-plus"],
-        )
-        self.assertEqual(models[2]["owned_by"], "task")
-        first, second = [call.args[0] for call in missing.open.call_args_list]
-        self.assertEqual(
-            first.full_url,
-            "https://ws-example.cn-beijing.maas.aliyuncs.com"
-            "/compatible-mode/v1/models",
-        )
-        self.assertEqual(first.get_header("Authorization"), "Bearer private-key")
-        self.assertEqual(
-            second.full_url,
-            "https://ws-example.cn-beijing.maas.aliyuncs.com/v1/models",
-        )
-        third = found.open.call_args.args[0]
-        self.assertEqual(
-            third.full_url,
-            "https://ws-example.cn-beijing.maas.aliyuncs.com/api/v1/models",
-        )
-
-    def test_model_list_requires_key_and_reports_failure_without_secret(self):
-        with self.assertRaises(client.TTSError):
-            client.list_models(client.workspace_base("ws-example"), "  ")
-        broken = Mock()
-        broken.open.side_effect = OSError("offline")
-        with (
-            patch.object(client, "build_opener", return_value=broken),
-            self.assertRaises(client.TTSError) as caught,
-        ):
-            client.list_models(client.workspace_base("ws-example"), "private-key")
-        self.assertIn("手动填写", str(caught.exception))
-        self.assertNotIn("private-key", str(caught.exception))
-
     def test_voice_list_reads_pages_and_validates_payload(self):
         page = Mock()
         page.open.return_value.__enter__ = Mock(
@@ -1230,13 +1168,12 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
     async def test_web_api_registration_and_older_astrbot_fallback(self):
         await self.plugin.initialize()
         routes = self.context.register_web_api.call_args_list
-        self.assertEqual(len(routes), 9)
+        self.assertEqual(len(routes), 8)
         self.assertEqual(
             routes[0].args[0], "/astrbot_plugin_qwen_audio_tts/preview/settings"
         )
         self.assertEqual(routes[1].args[2], ["POST"])
         registered = [route.args[0] for route in routes]
-        self.assertIn("/astrbot_plugin_qwen_audio_tts/voices/models", registered)
         self.assertIn("/astrbot_plugin_qwen_audio_tts/voices/list", registered)
         # Missing public Web API leaves normal voice features usable.
         with patch.dict(
@@ -1244,7 +1181,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             {"astrbot.api": types.ModuleType("astrbot.api"), "astrbot.api.web": None},
         ):
             await self.plugin.initialize()
-        self.assertEqual(self.context.register_web_api.call_count, 9)
+        self.assertEqual(self.context.register_web_api.call_count, 8)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ from .delivery import parse_plan
 from .voices import default_pair, fallback_pair, speech_connection
 from .enrollment import MAX_AUDIO, MAX_MULTIPART, EnrollmentManager, validate_wav
 from .settings import public_settings, revision, snapshot, validate_draft, save_profile
-from .tts_client import TTSError, list_models, list_voices, workspace_base
+from .tts_client import TTSError, list_voices, workspace_base
 
 
 class PanelMixin:
@@ -187,23 +187,6 @@ class PanelMixin:
                 web.request.username, cfg["connection"], body["job_id"]
             )
             return web.json_response(result)
-        except Exception as exc:  # noqa: BLE001 - Return safe errors at the authenticated API boundary.
-            return self._panel_error(exc)
-
-    async def voice_models(self):
-        """List the models the saved credential reaches, for the voices editor."""
-        web = self._web
-        if not web.request.username:
-            return web.error_response("请先登录 AstrBot 管理面板。", status_code=401)
-        try:
-            connection = self._clone_connection()["connection"]
-            models = await asyncio.to_thread(
-                list_models,
-                workspace_base(connection["workspace"]),
-                connection["api_key"],
-                20,
-            )
-            return web.json_response({"models": models, "total": len(models)})
         except Exception as exc:  # noqa: BLE001 - Return safe errors at the authenticated API boundary.
             return self._panel_error(exc)
 

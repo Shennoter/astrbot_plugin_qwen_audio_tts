@@ -264,7 +264,7 @@ def synthesize_http(base, api_key, payload, timeout=60):
         headers={
             "Authorization": "Bearer " + api_key,
             "Content-Type": "application/json",
-            "User-Agent": "AstrBot-Qwen-Audio-Plugin/0.9.1",
+            "User-Agent": "AstrBot-Qwen-Audio-Plugin/1.2.6",
         },
         method="POST",
     )
@@ -310,95 +310,6 @@ def synthesize_http(base, api_key, payload, timeout=60):
     return normalize_audio(content, payload["input"]["format"])
 
 
-def models_urls(base):
-    """Return candidate model list URLs for a validated API base.
-
-    The workspace gateway exposes the catalogue on the OpenAI-compatible
-    ``/compatible-mode/v1/models`` route; OpenAI-compatible proxies use
-    ``/v1/models`` and DashScope-style hosts may answer on ``/models``.
-
-    Args:
-        base: Validated workspace API base URL ending in ``/api/v1``.
-
-    Returns:
-        Candidate URLs in request order.
-    """
-    host = urlparse(base).hostname
-    return [
-        f"https://{host}/compatible-mode/v1/models",
-        f"https://{host}/v1/models",
-        base.rstrip("/") + "/models",
-    ]
-
-
-def _model_entries(body):
-    """Extract model entries from an OpenAI-style or bare list response.
-
-    Returns:
-        A list of ``(id, owned_by)`` string pairs, possibly empty.
-    """
-    entries = body.get("data") if isinstance(body, dict) else body
-    if not isinstance(entries, list):
-        return []
-    result = []
-    for item in entries:
-        name = item.get("id") if isinstance(item, dict) else item
-        if isinstance(name, str) and name.strip():
-            owner = item.get("owned_by") if isinstance(item, dict) else ""
-            result.append((name.strip()[:120], str(owner or "")[:60]))
-    return result
-
-
-def list_models(base, api_key, timeout=20):
-    """List the model ids the configured credential can reach.
-
-    The synthesis route lives under ``/api/v1`` while the catalogue is served on an
-    OpenAI-compatible route, so several candidates are tried in order. This is a
-    convenience lookup only: callers keep accepting any model id typed by hand.
-
-    Args:
-        base: Validated workspace API base URL.
-        api_key: The plugin configuration's API key.
-        timeout: Timeout in seconds for each attempt.
-
-    Returns:
-        A list of ``{"id": ..., "owned_by": ...}`` mappings sorted by id.
-
-    Raises:
-        TTSError: If no candidate endpoint returns a usable model list.
-    """
-    if not str(api_key).strip():
-        raise TTSError("请先在插件的语音服务配置中填写 API Key。")
-    headers = {
-        "Authorization": "Bearer " + str(api_key).strip(),
-        "Accept": "application/json",
-        "User-Agent": "AstrBot-Qwen-Audio-Plugin/1.2.5",
-    }
-    reasons = []
-    for url in models_urls(base):
-        try:
-            request = Request(url, headers=headers)
-            with build_opener(NoRedirect()).open(request, timeout=timeout) as response:
-                body = json.loads(response.read(1_000_000))
-        except HTTPError as exc:
-            reasons.append(f"HTTP {exc.code}")
-            continue
-        except (URLError, TimeoutError, OSError, ValueError):
-            reasons.append("连接失败")
-            continue
-        unique = {}
-        for name, owner in _model_entries(body):
-            unique.setdefault(name, {"id": name, "owned_by": owner})
-        if unique:
-            return sorted(unique.values(), key=lambda item: item["id"])
-        reasons.append("没有返回模型")
-    raise TTSError(
-        "无法获取模型列表（"
-        + "；".join(dict.fromkeys(reasons))
-        + "），请手动填写模型 ID。"
-    )
-
-
 def _post_json(url, api_key, payload, timeout, failure):
     """POST JSON with the plugin credential and return the parsed mapping.
 
@@ -421,7 +332,7 @@ def _post_json(url, api_key, payload, timeout, failure):
         headers={
             "Authorization": "Bearer " + str(api_key).strip(),
             "Content-Type": "application/json",
-            "User-Agent": "AstrBot-Qwen-Audio-Plugin/1.2.3",
+            "User-Agent": "AstrBot-Qwen-Audio-Plugin/1.2.6",
         },
         method="POST",
     )
