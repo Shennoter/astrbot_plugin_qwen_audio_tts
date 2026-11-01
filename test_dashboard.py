@@ -131,6 +131,30 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(value["config"]["connection"]["save_audio"])
 
+    async def test_preview_settings_lists_personas_for_the_rule_editor(self):
+        self.context.persona_manager = types.SimpleNamespace(
+            get_all_personas=AsyncMock(
+                return_value=[
+                    types.SimpleNamespace(persona_id="kuchiba-chisa"),
+                    {"persona_id": "whale-chan"},
+                    types.SimpleNamespace(persona_id="kuchiba-chisa"),
+                ]
+            )
+        )
+        value, status = await self.plugin.preview_settings()
+        self.assertEqual(status, 200)
+        self.assertEqual(value["personas"], ["kuchiba-chisa", "whale-chan"])
+        self.assertEqual(await self.plugin._known_personas(), ["kuchiba-chisa", "whale-chan"])
+
+    async def test_preview_settings_tolerates_missing_or_broken_persona_api(self):
+        value, status = await self.plugin.preview_settings()
+        self.assertEqual((status, value["personas"]), (200, []))
+        self.context.persona_manager = types.SimpleNamespace(
+            get_all_personas=AsyncMock(side_effect=RuntimeError("db down"))
+        )
+        value, status = await self.plugin.preview_settings()
+        self.assertEqual((status, value["personas"]), (200, []))
+
     async def save_profile_draft(self, profile_id, name, config, source=None):
         self.request.json.return_value = {
             "config": config, "revision": settings.revision(self.config),
@@ -145,7 +169,8 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         profile_a = settings.profile_config(self.config)
         second = copy.deepcopy(response["config"])
-        second["connection"].update(api_key="profile-b-secret", voice="voice-b", max_concurrent=3)
+        second["connection"].update(api_key="profile-b-secret", max_concurrent=3)
+        second["voices"].update(default_voice="voice-b")
         second["audio"]["rate"] = 1.4
         second["pronunciation"]["dictionary_zh_json"] = '{"测试":"测式"}'
         second["reply"]["probability"] = 12

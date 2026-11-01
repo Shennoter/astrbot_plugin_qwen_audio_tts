@@ -1153,25 +1153,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
 
     async def _known_personas(self):
         """List AstrBot persona names so the command can show valid values."""
-        manager = getattr(self.context, "persona_manager", None)
-        getter = getattr(manager, "get_all_personas", None)
-        if getter is None:
-            return []
-        try:
-            entries = await getter()
-        except Exception as exc:  # noqa: BLE001 - Listing personas is best effort.
-            logger.debug("Persona listing failed (%s).", type(exc).__name__)
-            return []
-        names = []
-        for entry in entries or ():
-            name = (
-                entry.get("persona_id")
-                if isinstance(entry, dict)
-                else getattr(entry, "persona_id", None)
-            )
-            if isinstance(name, str) and name:
-                names.append(name)
-        return names
+        return await self._persona_names()
 
     def _save_rules(self, rules):
         voices = snapshot(self.config)["voices"]

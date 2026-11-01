@@ -31,6 +31,28 @@ class PanelMixin:
             self._enrollment_manager = EnrollmentManager(root)
         return self._enrollment_manager
 
+    async def _persona_names(self):
+        """List AstrBot persona ids so the voice rules editor can offer them."""
+        manager = getattr(self.context, "persona_manager", None)
+        getter = getattr(manager, "get_all_personas", None)
+        if getter is None:
+            return []
+        try:
+            entries = await getter()
+        except Exception as exc:  # noqa: BLE001 - The editor still accepts manual ids.
+            logger.debug("Persona list unavailable (%s).", type(exc).__name__)
+            return []
+        names = []
+        for entry in entries or ():
+            name = (
+                entry.get("persona_id")
+                if isinstance(entry, dict)
+                else getattr(entry, "persona_id", None)
+            )
+            if isinstance(name, str) and name and name not in names:
+                names.append(name)
+        return names
+
     def _clone_connection(self):
         if self._closed:
             raise TTSError("插件已停用。")
@@ -196,6 +218,7 @@ class PanelMixin:
                 "text": cfg["preview"]["text"],
                 "language": cfg["preview"]["language"],
                 "max_chars": cfg["reply"]["max_chars"],
+                "personas": await self._persona_names(),
                 "model": model,
                 "voice": voice,
                 "configured": bool(

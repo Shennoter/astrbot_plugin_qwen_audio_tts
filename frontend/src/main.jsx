@@ -52,6 +52,9 @@ import SaveIcon from "@mui/icons-material/Save";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import DownloadIcon from "@mui/icons-material/Download";
+import AddIcon from "@mui/icons-material/Add";
+import DeleteIcon from "@mui/icons-material/Delete";
+import PersonIcon from "@mui/icons-material/Person";
 
 const bridge = window.AstrBotPluginView;
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -70,10 +73,16 @@ const pages = [
   },
   {
     id: "connection",
-    title: "服务与音色",
+    title: "语音服务",
     icon: SettingsVoiceIcon,
-    groups: ["connection", "language_models"],
-    description: "独立配置 API Key、完整业务空间域名和音色。",
+    groups: ["connection"],
+    description: "独立配置 API Key、业务空间地址与音频保存。",
+  },
+  {
+    id: "voices",
+    title: "音色配置",
+    icon: PersonIcon,
+    description: "按人格与语言选择模型和音色，默认音色兜底。",
   },
   {
     id: "audio",
@@ -131,6 +140,86 @@ const optionLabel = {
   en: "英语",
   ja: "日语",
   all: "全部语言",
+};
+const voiceLanguages = [
+  ["zh", "汉语"],
+  ["en", "英语"],
+  ["ja", "日语"],
+];
+const voicePairKeys = ["model", "voice"].concat(
+  voiceLanguages.flatMap(([code]) => [`${code}_model`, `${code}_voice`]),
+);
+const emptyVoiceRule = (persona) => ({
+  persona,
+  per_language: false,
+  ...Object.fromEntries(voicePairKeys.map((key) => [key, ""])),
+});
+const parseVoiceRules = (raw) => {
+  try {
+    const value = JSON.parse(raw || "[]");
+    return Array.isArray(value) ? value : null;
+  } catch (error) {
+    return null;
+  }
+};
+const voicePairFrom = (entry, code, perLanguage) => {
+  if (!entry) return ["", ""];
+  if (perLanguage && ["zh", "en", "ja"].includes(code)) {
+    const model = entry[`${code}_model`] || "";
+    if (model) return [model, entry[`${code}_voice`] || ""];
+  }
+  return [entry.model || "", entry.voice || ""];
+};
+const hasVoicePair = (model, voice) => !!(model && voice);
+const defaultVoicePair = (voices) =>
+  voicePairFrom(
+    {
+      model: voices?.default_model,
+      voice: voices?.default_voice,
+      zh_model: voices?.default_zh_model,
+      zh_voice: voices?.default_zh_voice,
+      en_model: voices?.default_en_model,
+      en_voice: voices?.default_en_voice,
+      ja_model: voices?.default_ja_model,
+      ja_voice: voices?.default_ja_voice,
+    },
+    "auto",
+    false,
+  );
+const voicesReady = (voices) => {
+  if (!voices) return false;
+  if (hasVoicePair(voices.default_model, voices.default_voice)) return true;
+  if (
+    voices.default_per_language &&
+    voiceLanguages.some(([code]) =>
+      hasVoicePair(
+        voices[`default_${code}_model`],
+        voices[`default_${code}_voice`],
+      ),
+    )
+  )
+    return true;
+  const rules = parseVoiceRules(voices.rules_json) || [];
+  return rules.some(
+    (rule) =>
+      hasVoicePair(rule.model, rule.voice) ||
+      (rule.per_language &&
+        voiceLanguages.some(([code]) =>
+          hasVoicePair(rule[`${code}_model`], rule[`${code}_voice`]),
+        )),
+  );
+};
+const savedVoiceNames = (draft) => {
+  try {
+    const list = JSON.parse(draft?.voice_library?.entries_json || "[]");
+    return Array.isArray(list)
+      ? list
+          .map((entry) => entry?.name)
+          .filter((name) => typeof name === "string" && name)
+      : [];
+  } catch (error) {
+    return [];
+  }
 };
 const drawerWidth = 240;
 const cardSx = {
@@ -537,7 +626,7 @@ function App() {
       setResult({
         url: urlRef.current,
         filename: response.filename,
-        model: response.model || config.connection.model,
+        model: response.model || defaultVoicePair(config.voices)[0],
         format: response.mime_type,
         segments: response.segments || 1,
         pause: response.added_pause_ms || 0,
@@ -579,7 +668,7 @@ function App() {
         prefs = cfg.cloning;
       const job = await bridge.apiPost("cloning/create", {
         upload_id: uploaded.upload_id,
-        model: cfg.connection.model,
+        model: defaultVoicePair(cfg.voices)[0],
         prefix: prefs.prefix,
         language: prefs.language,
         enable_preprocess: prefs.enable_preprocess,
@@ -637,6 +726,62 @@ function App() {
     setDirty(true);
     notify(`已载入“${entry.name}”的全部设置，保存后应用到聊天。`);
   }
+  const voiceRules = draft ? parseVoiceRules(draft.voices.rules_json) : [];
+  const personaOptions = Array.from(
+    new Set([
+      ...(data?.personas || []),
+      ...(voiceRules || []).map((rule) => rule?.persona).filter(Boolean),
+    ]),
+  );
+  const savedVoices = savedVoiceNames(draft);
+  const defaultPair = draft ? defaultVoicePair(draft.voices) : ["", ""];
+  const writeVoiceRules = (next) =>
+    change("voices", "rules_json", JSON.stringify(next));
+  const updateVoiceRule = (index, patch) => {
+    if (!voiceRules) return;
+    writeVoiceRules(
+      voiceRules.map((rule, position) =>
+        position === index ? { ...rule, ...patch } : rule,
+      ),
+    );
+  };
+  const removeVoiceRule = (index) => {
+    if (!voiceRules) return;
+    writeVoiceRules(voiceRules.filter((_, position) => position !== index));
+  };
+  const addVoiceRule = () => {
+    const used = new Set((voiceRules || []).map((rule) => rule.persona));
+    const next = personaOptions.find((name) => !used.has(name));
+    if (next) writeVoiceRules([...(voiceRules || []), emptyVoiceRule(next)]);
+  };
+  const voiceRuleField = (rule, index, prefix, label) => (
+    <Stack
+      direction={{ xs: "column", sm: "row" }}
+      spacing={2}
+      key={prefix || "default"}
+    >
+      <TextField
+        size="small"
+        fullWidth
+        label={`${label}模型`}
+        value={rule[`${prefix}model`] || ""}
+        disabled={busy}
+        onChange={(event) =>
+          updateVoiceRule(index, { [`${prefix}model`]: event.target.value })
+        }
+      />
+      <TextField
+        size="small"
+        fullWidth
+        label={`${label}音色 ID`}
+        value={rule[`${prefix}voice`] || ""}
+        disabled={busy}
+        onChange={(event) =>
+          updateVoiceRule(index, { [`${prefix}voice`]: event.target.value })
+        }
+      />
+    </Stack>
+  );
   const profilePicker = () => (
     <Stack spacing={2}>
       <TextField
@@ -740,9 +885,7 @@ function App() {
                 gridColumn:
                   ["text", "list"].includes(
                     data.schema[group].items[name].type,
-                  ) ||
-                  ["api_key", "workspace", "voice"].includes(name) ||
-                  (group === "language_models" && name === "enabled")
+                  ) || ["api_key", "workspace"].includes(name)
                     ? "1 / -1"
                     : undefined,
               }}
@@ -759,13 +902,7 @@ function App() {
     draft &&
     (draft.connection.api_key || (profileKeySet && !clearKey)) &&
     draft.connection.workspace &&
-    (draft.connection.voice ||
-      (draft.language_models.enabled &&
-        ["zh", "en", "ja"].some(
-          (code) =>
-            draft.language_models[`${code}_model`] &&
-            draft.language_models[`${code}_voice`],
-        )));
+    voicesReady(draft.voices);
   const length = draft ? Array.from(draft.preview.text.trim()).length : 0;
   const sidebar = (
     <Box
@@ -1201,7 +1338,8 @@ function App() {
                             color="text.secondary"
                             sx={{ display: "block", my: 1 }}
                           >
-                            {draft.connection.model}
+                            {defaultPair[0] ||
+                              (ready ? "按语言配置" : "未配置默认模型")}
                           </Typography>
                           <Box
                             component="code"
@@ -1214,22 +1352,24 @@ function App() {
                               fontSize: 11,
                             }}
                           >
-                            {draft.connection.voice || "请填写音色 ID"}
+                            {defaultPair[1] ||
+                              (ready ? "按语言配置" : "请填写音色 ID")}
                           </Box>
-                          {draft.language_models.enabled && (
-                            <Alert
-                              severity="info"
-                              sx={{ mt: 2, textAlign: "left" }}
-                            >
-                              已开启按语言选择模型，生成时使用对应语言的模型与音色；未配置时使用此默认配对。
-                            </Alert>
-                          )}
+                          {draft.voices.enabled &&
+                            (voiceRules || []).length > 0 && (
+                              <Alert
+                                severity="info"
+                                sx={{ mt: 2, textAlign: "left" }}
+                              >
+                                已启用按人格选择音色：会话人格命中规则时使用规则里的配对，未命中时使用此默认配对。
+                              </Alert>
+                            )}
                           <Button
                             size="small"
-                            onClick={() => navigate("connection")}
+                            onClick={() => navigate("voices")}
                             sx={{ mt: 1 }}
                           >
-                            编辑服务与音色 →
+                            编辑音色配置 →
                           </Button>
                         </CardContent>
                       </Card>
@@ -1276,6 +1416,221 @@ function App() {
                         qwen_speak。情绪与升降调是模型表现，分段停顿是插件追加的静音。
                       </Alert>
                     )}
+                  </Stack>
+                )}
+                {page === "voices" && (
+                  <Stack spacing={3}>
+                    <Card sx={cardSx}>
+                      <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+                        <Typography variant="h6" sx={{ fontSize: 17, mb: 1 }}>
+                          默认音色
+                        </Typography>
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ display: "block", mb: 2 }}
+                        >
+                          所有人格规则都没有命中时使用；未配置时朗读会提示到本页填写。
+                        </Typography>
+                        <Stack spacing={2.5}>
+                          {field("voices", "enabled")}
+                          {field("voices", "default_per_language")}
+                          <Box
+                            sx={{
+                              display: "grid",
+                              gridTemplateColumns: {
+                                xs: "1fr",
+                                sm: "repeat(2,minmax(0,1fr))",
+                              },
+                              gap: 2.5,
+                            }}
+                          >
+                            {field("voices", "default_model")}
+                            {field("voices", "default_voice")}
+                            {draft.voices.default_per_language &&
+                              voiceLanguages.flatMap(([code]) => [
+                                <Box key={`${code}-model`}>
+                                  {field("voices", `default_${code}_model`)}
+                                </Box>,
+                                <Box key={`${code}-voice`}>
+                                  {field("voices", `default_${code}_voice`)}
+                                </Box>,
+                              ])}
+                          </Box>
+                        </Stack>
+                      </CardContent>
+                    </Card>
+                    <Card sx={cardSx}>
+                      <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+                        <Stack
+                          direction="row"
+                          spacing={1.5}
+                          sx={{ alignItems: "center", mb: 1 }}
+                        >
+                          <Typography variant="h6" sx={{ fontSize: 17 }}>
+                            人格音色规则
+                          </Typography>
+                          <Chip
+                            size="small"
+                            color={voiceRules ? "default" : "error"}
+                            label={
+                              voiceRules
+                                ? `${voiceRules.length} 条`
+                                : "JSON 错误"
+                            }
+                          />
+                        </Stack>
+                        <Typography variant="caption" color="text.secondary">
+                          AstrBot
+                          每次朗读时读取当前会话人格；同一人格只能有一条规则，模型与音色必须成对填写。人格在
+                          AstrBot 人格管理中创建，会话里用 /persona 切换。
+                        </Typography>
+                        {!voiceRules && (
+                          <Alert severity="error" sx={{ mt: 2 }}>
+                            规则 JSON 无法解析，请在下方“高级”里修正后再保存。
+                          </Alert>
+                        )}
+                        {voiceRules && voiceRules.length === 0 && (
+                          <Alert severity="info" sx={{ mt: 2 }}>
+                            尚未配置人格规则，所有人格都使用默认音色。
+                          </Alert>
+                        )}
+                        {voiceRules && voiceRules.length > 0 && (
+                          <Stack spacing={2} sx={{ mt: 2 }}>
+                            {voiceRules.map((rule, index) => (
+                              <Box
+                                key={`${rule.persona || "rule"}-${index}`}
+                                sx={{
+                                  border: 1,
+                                  borderColor: "divider",
+                                  borderRadius: 2,
+                                  p: 2,
+                                }}
+                              >
+                                <Stack spacing={2}>
+                                  <Stack
+                                    direction={{ xs: "column", sm: "row" }}
+                                    spacing={2}
+                                    sx={{ alignItems: { sm: "center" } }}
+                                  >
+                                    <TextField
+                                      select
+                                      size="small"
+                                      label="人格"
+                                      value={rule.persona || ""}
+                                      disabled={busy}
+                                      onChange={(event) =>
+                                        updateVoiceRule(index, {
+                                          persona: event.target.value,
+                                        })
+                                      }
+                                      sx={{ minWidth: 200, flex: 1 }}
+                                    >
+                                      {personaOptions.map((name) => (
+                                        <MenuItem key={name} value={name}>
+                                          {name}
+                                        </MenuItem>
+                                      ))}
+                                    </TextField>
+                                    <FormControlLabel
+                                      label="按语言细分"
+                                      labelPlacement="start"
+                                      sx={{ m: 0, gap: 1 }}
+                                      control={
+                                        <Switch
+                                          checked={!!rule.per_language}
+                                          disabled={busy}
+                                          onChange={(event) =>
+                                            updateVoiceRule(index, {
+                                              per_language:
+                                                event.target.checked,
+                                            })
+                                          }
+                                        />
+                                      }
+                                    />
+                                    <Tooltip title="删除该人格规则">
+                                      <IconButton
+                                        disabled={busy}
+                                        onClick={() => removeVoiceRule(index)}
+                                      >
+                                        <DeleteIcon />
+                                      </IconButton>
+                                    </Tooltip>
+                                  </Stack>
+                                  <Stack spacing={2}>
+                                    {!rule.per_language &&
+                                      voiceRuleField(rule, index, "", "")}
+                                    {rule.per_language &&
+                                      voiceLanguages.map(([code, label]) =>
+                                        voiceRuleField(
+                                          rule,
+                                          index,
+                                          `${code}_`,
+                                          label,
+                                        ),
+                                      )}
+                                  </Stack>
+                                </Stack>
+                              </Box>
+                            ))}
+                          </Stack>
+                        )}
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          spacing={2}
+                          sx={{ mt: 2, alignItems: { sm: "center" } }}
+                        >
+                          <Button
+                            startIcon={<AddIcon />}
+                            variant="outlined"
+                            disabled={busy || !personaOptions.length}
+                            onClick={addVoiceRule}
+                          >
+                            添加人格规则
+                          </Button>
+                          {savedVoices.length > 0 && (
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                            >
+                              已保存音色：{savedVoices.join("、")}
+                            </Typography>
+                          )}
+                          {!personaOptions.length && (
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                            >
+                              未读取到 AstrBot 人格；仍可在下方手写规则或使用
+                              /语音设置 音色配置。
+                            </Typography>
+                          )}
+                        </Stack>
+                      </CardContent>
+                    </Card>
+                    <Card sx={cardSx}>
+                      <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+                        <Typography
+                          variant="subtitle1"
+                          sx={{ fontWeight: 650, mb: 1 }}
+                        >
+                          高级：规则 JSON
+                        </Typography>
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ display: "block", mb: 2 }}
+                        >
+                          与上面的表格是同一份配置；适合批量粘贴或排查问题时使用。
+                        </Typography>
+                        {field("voices", "rules_json")}
+                      </CardContent>
+                    </Card>
+                    <Alert severity="info">
+                      优先级：人格规则（含规则内的语言配对）&gt;
+                      默认音色；未命中的语言回退到规则的默认配对，未命中的人格回退到默认音色。命令朗读、自然语言工具、随机语音与页面试听都遵循同一套规则；切换配置文件时音色配置随档案一起切换。
+                    </Alert>
                   </Stack>
                 )}
                 {page === "clone" && (
@@ -1374,7 +1729,13 @@ function App() {
                               15 分钟后过期。
                             </Typography>
                             <Divider />
-                            {field("connection", "model")}
+                            {field("voices", "default_model")}
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                            >
+                              音色绑定创建时的模型；这里的“默认模型”来自“音色配置”，可随时在该页修改。
+                            </Typography>
                             <Box
                               sx={{
                                 display: "grid",
@@ -1490,15 +1851,19 @@ function App() {
                                     size="small"
                                     variant="contained"
                                     onClick={() => {
-                                      change("connection", "model", job.model);
                                       change(
-                                        "connection",
-                                        "voice",
+                                        "voices",
+                                        "default_model",
+                                        job.model,
+                                      );
+                                      change(
+                                        "voices",
+                                        "default_voice",
                                         job.voice_id,
                                       );
                                       navigate("studio");
                                       notify(
-                                        "音色已填入草稿，可先试听，再保存应用到聊天。",
+                                        "音色已填入默认音色草稿，可先试听，再保存应用到聊天。",
                                       );
                                     }}
                                   >
