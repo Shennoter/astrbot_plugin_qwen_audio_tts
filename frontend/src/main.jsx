@@ -24,6 +24,7 @@ import {
   Drawer,
   FormControlLabel,
   IconButton,
+  InputAdornment,
   List,
   ListItemButton,
   ListItemIcon,
@@ -55,6 +56,7 @@ import UploadFileIcon from "@mui/icons-material/UploadFile";
 import DownloadIcon from "@mui/icons-material/Download";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
+import ClearIcon from "@mui/icons-material/Clear";
 import PersonIcon from "@mui/icons-material/Person";
 
 const bridge = window.AstrBotPluginView;
@@ -350,6 +352,26 @@ const cardSx = {
   borderColor: "divider",
   boxShadow: "0 2px 16px rgba(145,158,171,0.08)",
 };
+// Model ids are long and easy to mistype; every model input gets the same
+// clear affordance the voice pickers already have.
+const modelClearAdornment = (value, onClear) =>
+  value
+    ? {
+        endAdornment: (
+          <InputAdornment position="end">
+            <IconButton
+              size="small"
+              edge="end"
+              aria-label="清除模型 ID"
+              title="清除模型 ID"
+              onClick={onClear}
+            >
+              <ClearIcon fontSize="small" />
+            </IconButton>
+          </InputAdornment>
+        ),
+      }
+    : undefined;
 
 function Field({
   group,
@@ -449,6 +471,11 @@ function Field({
               : undefined
       }
       slotProps={{
+        // Only plain model inputs (never a select) get the clear button.
+        input:
+          /(^|_)model$/.test(name) && !meta.options
+            ? modelClearAdornment(value, () => onChange(group, name, ""))
+            : undefined,
         htmlInput: {
           ...input,
           ...(numeric
@@ -878,7 +905,8 @@ function App() {
   async function loadJobs() {
     try {
       const value = await bridge.apiGet("cloning/jobs");
-      setJobs(value.jobs);
+      // A payload without the list must not white-screen the page.
+      setJobs(Array.isArray(value?.jobs) ? value.jobs : []);
       setJobError("");
     } catch (error) {
       setJobError(error.message);
@@ -1116,10 +1144,15 @@ function App() {
       >
         <TextField
           size="small"
-          fullWidth
           label={`${label}模型`}
+          sx={{ flex: 1, minWidth: 0 }}
           value={rule[modelKey] || ""}
           disabled={busy}
+          slotProps={{
+            input: modelClearAdornment(rule[modelKey], () =>
+              updateVoiceRule(index, { [modelKey]: "" }),
+            ),
+          }}
           onChange={(event) =>
             updateVoiceRule(index, { [modelKey]: event.target.value })
           }
@@ -1756,63 +1789,6 @@ function App() {
                       </CardContent>
                     </Card>
                     <Stack spacing={3}>
-                      <Card sx={cardSx}>
-                        <CardContent sx={{ textAlign: "center", p: 3 }}>
-                          <Avatar
-                            sx={{
-                              width: 64,
-                              height: 64,
-                              mx: "auto",
-                              bgcolor: "primary.main",
-                              mb: 2,
-                            }}
-                          >
-                            <GraphicEqIcon fontSize="large" />
-                          </Avatar>
-                          <Typography variant="h6" sx={{ fontSize: 16 }}>
-                            默认音色
-                          </Typography>
-                          <Typography
-                            id="current-model"
-                            variant="caption"
-                            color="text.secondary"
-                            sx={{ display: "block", my: 1 }}
-                          >
-                            {defaultPair[0] ||
-                              (ready ? "按语言配置" : "未配置默认模型")}
-                          </Typography>
-                          <Box
-                            component="code"
-                            id="current-voice"
-                            sx={{
-                              display: "block",
-                              p: 1.5,
-                              bgcolor: "action.hover",
-                              borderRadius: 1.5,
-                              fontSize: 11,
-                            }}
-                          >
-                            {defaultPair[1] ||
-                              (ready ? "按语言配置" : "请填写音色 ID")}
-                          </Box>
-                          {draft.voices.enabled &&
-                            (voiceRules || []).length > 0 && (
-                              <Alert
-                                severity="info"
-                                sx={{ mt: 2, textAlign: "left" }}
-                              >
-                                已启用按人格选择音色：会话人格命中规则时使用规则里的配对，未命中时使用此默认配对。
-                              </Alert>
-                            )}
-                          <Button
-                            size="small"
-                            onClick={() => navigate("voices")}
-                            sx={{ mt: 1 }}
-                          >
-                            编辑音色配置 →
-                          </Button>
-                        </CardContent>
-                      </Card>
                       <Card sx={cardSx}>
                         <CardContent sx={{ p: 3 }}>
                           <Typography
