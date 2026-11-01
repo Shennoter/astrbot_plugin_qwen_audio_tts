@@ -14,8 +14,6 @@
 - WebUI 新增“音色配置”页：默认音色、人格规则表格（人格下拉、按语言细分、增删）与高级 JSON；“语音服务”页只保留连接与保存设置；侧边导航跟随 AstrBot 深色模式。
 - 音色字段是可输入的下拉框：候选来自“获取音色列表”的服务端音色、本机音色库与配置里已用过的音色，去重后按“音色 ID 以模型名开头”随模型筛选。
 - “获取音色列表”调用 `POST /api/v1/services/audio/tts/customization`（`model=voice-enrollment`、`input.action=list_voice`，按 `total_count` 自动翻页，最多 200 条），只保留 `voice_id`、`target_model` 与 `status`；状态 `DEPLOYING` 显示“审核中”、`UNDEPLOYED` 显示“不可用”。
-- 修复 WebUI 白屏：首帧 `draft` 为空时读取 `voices` 抛 `TypeError`，整个页面不渲染。
-- 修复长音色 ID 撑破下拉弹层与行内宽度塌陷：下拉选项单行截断，完整值放在 tooltip。
 - 补充规则校验、人格优先级与语言回退、人格接口缺失/WebChat 默认人格降级、命令读写、迁移与档案保存、音色列表的请求地址/分页/字段裁剪/凭据校验/错误脱敏/未登录 401、音色缺失提示的离线回归（共 277 项）。
 
 ## 1.1.2
