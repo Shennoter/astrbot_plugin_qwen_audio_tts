@@ -6,7 +6,7 @@
 
 基于阿里云百炼语音服务的 AstrBot 插件，支持音色创建、文字朗读、随机语音回复与在线试听。
 
-![Version](https://img.shields.io/badge/version-1.2.7-blue)
+![Version](https://img.shields.io/badge/version-1.2.0-blue)
 ![AstrBot](https://img.shields.io/badge/AstrBot-plugin-7C3AED)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 
