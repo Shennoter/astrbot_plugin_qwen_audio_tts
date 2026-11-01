@@ -237,6 +237,14 @@ const voiceModelMatches = (voice, model) => {
   return id === prefix || id.startsWith(`${prefix}-`);
 };
 const uniqueStrings = (values) => Array.from(new Set(values.filter(Boolean)));
+// Voice states from the API: DEPLOYING (in review) / OK / UNDEPLOYED (rejected).
+const voiceStatusNote = (status) => {
+  const value = (status || "").trim().toUpperCase();
+  if (!value || value === "OK") return "";
+  if (value === "DEPLOYING") return "审核中";
+  if (value === "UNDEPLOYED") return "不可用";
+  return value;
+};
 const drawerWidth = 240;
 const cardSx = {
   borderRadius: 3,
@@ -840,11 +848,7 @@ function App() {
       chosen.push({ id: voice, label: note ? `${label} · ${note}` : label });
     };
     remoteVoices.forEach((entry) =>
-      add(
-        entry.voice_id,
-        "",
-        entry.status && entry.status !== "OK" ? entry.status : "",
-      ),
+      add(entry.voice_id, "", voiceStatusNote(entry.status)),
     );
     libraryVoices.forEach((entry) => add(entry.voice, entry.name));
     usedVoices.forEach((voice) => add(voice, ""));
@@ -1219,7 +1223,7 @@ function App() {
       <Box sx={{ mt: "auto", pt: 4, ml: 1 }}>
         <Chip
           size="small"
-          label="v1.2.4"
+          label="v1.2.5"
           variant="outlined"
           sx={{ color: "text.secondary", borderColor: "divider" }}
         />

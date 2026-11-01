@@ -372,7 +372,7 @@ def list_models(base, api_key, timeout=20):
     headers = {
         "Authorization": "Bearer " + str(api_key).strip(),
         "Accept": "application/json",
-        "User-Agent": "AstrBot-Qwen-Audio-Plugin/1.2.4",
+        "User-Agent": "AstrBot-Qwen-Audio-Plugin/1.2.5",
     }
     reasons = []
     for url in models_urls(base):
