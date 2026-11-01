@@ -325,6 +325,61 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(client.TTSError):
             client.normalize_audio(b"<html>error</html>", "wav")
 
+    def test_model_list_prefers_v1_then_falls_back_and_sorts(self):
+        missing = Mock()
+        missing.open.side_effect = HTTPError(
+            "https://example", 404, "missing", {}, io.BytesIO(b"{}")
+        )
+        found = Mock()
+        found.open.return_value.__enter__ = Mock(
+            return_value=io.BytesIO(
+                json.dumps(
+                    {
+                        "data": [
+                            {"id": "qwen-audio-3.1-tts-plus", "owned_by": "task"},
+                            {"id": "b-model"},
+                            "a-model",
+                            {"id": "qwen-audio-3.1-tts-plus"},
+                        ]
+                    }
+                ).encode()
+            )
+        )
+        found.open.return_value.__exit__ = Mock(return_value=False)
+        with patch.object(client, "build_opener", side_effect=[missing, found]):
+            models = client.list_models(
+                client.workspace_base("ws-example"), "private-key"
+            )
+        self.assertEqual(
+            [item["id"] for item in models],
+            ["a-model", "b-model", "qwen-audio-3.1-tts-plus"],
+        )
+        self.assertEqual(models[2]["owned_by"], "task")
+        first = missing.open.call_args.args[0]
+        self.assertEqual(
+            first.full_url,
+            "https://ws-example.cn-beijing.maas.aliyuncs.com/v1/models",
+        )
+        self.assertEqual(first.get_header("Authorization"), "Bearer private-key")
+        second = found.open.call_args.args[0]
+        self.assertEqual(
+            second.full_url,
+            "https://ws-example.cn-beijing.maas.aliyuncs.com/api/v1/models",
+        )
+
+    def test_model_list_requires_key_and_reports_failure_without_secret(self):
+        with self.assertRaises(client.TTSError):
+            client.list_models(client.workspace_base("ws-example"), "  ")
+        broken = Mock()
+        broken.open.side_effect = OSError("offline")
+        with (
+            patch.object(client, "build_opener", return_value=broken),
+            self.assertRaises(client.TTSError) as caught,
+        ):
+            client.list_models(client.workspace_base("ws-example"), "private-key")
+        self.assertIn("手动填写", str(caught.exception))
+        self.assertNotIn("private-key", str(caught.exception))
+
 
 class PluginTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -1092,18 +1147,22 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
     async def test_web_api_registration_and_older_astrbot_fallback(self):
         await self.plugin.initialize()
         routes = self.context.register_web_api.call_args_list
-        self.assertEqual(len(routes), 7)
+        self.assertEqual(len(routes), 8)
         self.assertEqual(
             routes[0].args[0], "/astrbot_plugin_qwen_audio_tts/preview/settings"
         )
         self.assertEqual(routes[1].args[2], ["POST"])
+        self.assertIn(
+            "/astrbot_plugin_qwen_audio_tts/voices/models",
+            [route.args[0] for route in routes],
+        )
         # Missing public Web API leaves normal voice features usable.
         with patch.dict(
             sys.modules,
             {"astrbot.api": types.ModuleType("astrbot.api"), "astrbot.api.web": None},
         ):
             await self.plugin.initialize()
-        self.assertEqual(self.context.register_web_api.call_count, 7)
+        self.assertEqual(self.context.register_web_api.call_count, 8)
 
 
 if __name__ == "__main__":

@@ -239,6 +239,7 @@ function Field({
   apiKeySet,
   clearKey,
   onClearKey,
+  datalist,
 }) {
   const meta = schema[group].items[name];
   const path = `${group}.${name}`;
@@ -251,7 +252,11 @@ function Field({
       (meta.type === "int" && !Number.isInteger(Number(value))) ||
       (limit && (value < limit[0] || value > limit[1])));
   const hint = compact ? undefined : meta.hint;
-  const input = { "data-field": path, "aria-label": meta.description };
+  const input = {
+    "data-field": path,
+    "aria-label": meta.description,
+    ...(datalist ? { list: datalist } : {}),
+  };
   if (meta.type === "bool")
     return (
       <Box>
@@ -434,6 +439,8 @@ function App() {
     "先保存 API Key 和业务空间完整域名，再上传参考录音。",
   );
   const [jobs, setJobs] = useState([]);
+  const [modelOptions, setModelOptions] = useState([]);
+  const [modelBusy, setModelBusy] = useState(false);
   const [jobError, setJobError] = useState("");
   const [querying, setQuerying] = useState(null);
   const audioRef = useRef(null);
@@ -696,6 +703,32 @@ function App() {
       setJobError(error.message);
     }
   }
+  async function loadModels() {
+    if (modelBusy) return;
+    setModelBusy(true);
+    try {
+      const value = await bridge.apiGet("voices/models");
+      const ids = (value.models || [])
+        .map((item) => (typeof item === "string" ? item : item?.id))
+        .filter((id) => typeof id === "string" && id);
+      // Prefer speech models, but never hide a list that carries no keyword hit.
+      const speech = ids.filter((id) => /tts|audio|voice|speech/i.test(id));
+      setModelOptions(speech.length ? speech : ids);
+      notify(
+        ids.length
+          ? `已获取 ${ids.length} 个模型，其中 ${speech.length} 个疑似语音模型；模型输入框会给出候选，仍可手动填写。`
+          : "服务端没有返回模型，请手动填写模型 ID。",
+        ids.length ? "success" : "warning",
+      );
+    } catch (error) {
+      notify(
+        `${error.message || "获取模型列表失败"}；可直接手动填写模型 ID。`,
+        "error",
+      );
+    } finally {
+      setModelBusy(false);
+    }
+  }
   async function queryJob(job) {
     setQuerying(job.job_id);
     try {
@@ -766,6 +799,7 @@ function App() {
         label={`${label}模型`}
         value={rule[`${prefix}model`] || ""}
         disabled={busy}
+        slotProps={{ htmlInput: { list: "tts-model-options" } }}
         onChange={(event) =>
           updateVoiceRule(index, { [`${prefix}model`]: event.target.value })
         }
@@ -856,6 +890,11 @@ function App() {
         value={draft[group][name]}
         onChange={change}
         compact={compact}
+        datalist={
+          group === "voices" && /(^|_)model$/.test(name)
+            ? "tts-model-options"
+            : undefined
+        }
         apiKeySet={profileKeySet}
         clearKey={clearKey}
         onClearKey={() => {
@@ -991,7 +1030,7 @@ function App() {
       <Box sx={{ mt: "auto", pt: 4, ml: 1 }}>
         <Chip
           size="small"
-          label="v1.2.0"
+          label="v1.2.1"
           variant="outlined"
           sx={{ color: "text.secondary", borderColor: "divider" }}
         />
@@ -1435,17 +1474,37 @@ function App() {
                 )}
                 {page === "voices" && (
                   <Stack spacing={3}>
+                    <datalist id="tts-model-options">
+                      {modelOptions.map((id) => (
+                        <option key={id} value={id} />
+                      ))}
+                    </datalist>
                     <Card sx={cardSx}>
                       <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
-                        <Typography variant="h6" sx={{ fontSize: 17, mb: 1 }}>
-                          默认音色
-                        </Typography>
+                        <Stack
+                          direction="row"
+                          spacing={1.5}
+                          sx={{ alignItems: "center", mb: 1 }}
+                        >
+                          <Typography variant="h6" sx={{ fontSize: 17 }}>
+                            默认音色
+                          </Typography>
+                          <Box sx={{ flex: 1 }} />
+                          <Button
+                            size="small"
+                            startIcon={<RefreshIcon />}
+                            disabled={modelBusy || busy}
+                            onClick={loadModels}
+                          >
+                            {modelBusy ? "获取中…" : "获取模型列表"}
+                          </Button>
+                        </Stack>
                         <Typography
                           variant="caption"
                           color="text.secondary"
                           sx={{ display: "block", mb: 2 }}
                         >
-                          所有人格规则都没有命中时使用；未配置时朗读会提示到本页填写。
+                          所有人格规则都没有命中时使用；未配置时朗读会提示到本页填写。“获取模型列表”读取已保存凭据可用的模型，仅作候选提示，不会覆盖已填写的值。
                         </Typography>
                         <Stack spacing={2.5}>
                           {field("voices", "enabled")}

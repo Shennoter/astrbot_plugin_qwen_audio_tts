@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 from urllib.error import HTTPError
 
-from . import enrollment, settings
+from . import enrollment, panel, settings
 from . import test_plugin as h
 from .tts_client import TTSError
 
@@ -916,6 +916,37 @@ class VoiceRuleCommandTests(h.PluginTests):
         self.config["voices"]["default_voice"] = ""
         with self.assertRaisesRegex(TTSError, "音色配置"):
             await self.plugin._speak("你好")
+
+
+class VoiceModelsEndpointTests(h.PluginTests):
+    """The voices editor may fetch a model list, but stays usable without it."""
+
+    async def test_requires_login_and_returns_models(self):
+        self.request.username = None
+        self.assertEqual((await self.plugin.voice_models())[1], 401)
+        self.request.username = "admin"
+        with patch.object(
+            panel,
+            "list_models",
+            return_value=[{"id": "qwen-audio-3.1-tts-plus", "owned_by": "task"}],
+        ):
+            payload, code = await self.plugin.voice_models()
+        self.assertEqual(code, 200)
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["models"][0]["id"], "qwen-audio-3.1-tts-plus")
+
+    async def test_missing_credentials_and_lookup_errors_are_readable(self):
+        self.config["connection"]["api_key"] = ""
+        payload, code = await self.plugin.voice_models()
+        self.assertEqual(code, 400)
+        self.assertIn("API Key", payload["message"])
+        self.config["connection"]["api_key"] = "test-key"
+        with patch.object(
+            panel, "list_models", side_effect=TTSError("无法获取模型列表（HTTP 404）")
+        ):
+            payload, code = await self.plugin.voice_models()
+        self.assertEqual(code, 400)
+        self.assertIn("无法获取模型列表", payload["message"])
 
 
 if __name__ == "__main__":

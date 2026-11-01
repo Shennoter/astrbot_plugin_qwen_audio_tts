@@ -308,3 +308,84 @@ def synthesize_http(base, api_key, payload, timeout=60):
     except (HTTPError, URLError, TimeoutError, OSError):
         raise TTSError("音频已合成，但下载失败；请检查网络。") from None
     return normalize_audio(content, payload["input"]["format"])
+
+
+def models_url(base):
+    """Return the OpenAI-compatible model list URL for a validated API base.
+
+    Args:
+        base: Validated workspace API base URL ending in ``/api/v1``.
+
+    Returns:
+        The model list URL sharing the workspace hostname.
+    """
+    return f"https://{urlparse(base).hostname}/v1/models"
+
+
+def _model_entries(body):
+    """Extract model entries from an OpenAI-style or bare list response.
+
+    Returns:
+        A list of ``(id, owned_by)`` string pairs, possibly empty.
+    """
+    entries = body.get("data") if isinstance(body, dict) else body
+    if not isinstance(entries, list):
+        return []
+    result = []
+    for item in entries:
+        name = item.get("id") if isinstance(item, dict) else item
+        if isinstance(name, str) and name.strip():
+            owner = item.get("owned_by") if isinstance(item, dict) else ""
+            result.append((name.strip()[:120], str(owner or "")[:60]))
+    return result
+
+
+def list_models(base, api_key, timeout=20):
+    """List the model ids the configured credential can reach.
+
+    The synthesis route lives under ``/api/v1`` while gateways usually expose the
+    catalogue on the OpenAI-compatible ``/v1/models`` route, so both orders are
+    tried. This is a convenience lookup only: callers keep accepting any model id
+    typed by hand.
+
+    Args:
+        base: Validated workspace API base URL.
+        api_key: The plugin configuration's API key.
+        timeout: Timeout in seconds for each attempt.
+
+    Returns:
+        A list of ``{"id": ..., "owned_by": ...}`` mappings sorted by id.
+
+    Raises:
+        TTSError: If no candidate endpoint returns a usable model list.
+    """
+    if not str(api_key).strip():
+        raise TTSError("请先在插件的语音服务配置中填写 API Key。")
+    headers = {
+        "Authorization": "Bearer " + str(api_key).strip(),
+        "Accept": "application/json",
+        "User-Agent": "AstrBot-Qwen-Audio-Plugin/1.2.1",
+    }
+    reasons = []
+    for url in (models_url(base), base.rstrip("/") + "/models"):
+        try:
+            request = Request(url, headers=headers)
+            with build_opener(NoRedirect()).open(request, timeout=timeout) as response:
+                body = json.loads(response.read(1_000_000))
+        except HTTPError as exc:
+            reasons.append(f"HTTP {exc.code}")
+            continue
+        except (URLError, TimeoutError, OSError, ValueError):
+            reasons.append("连接失败")
+            continue
+        unique = {}
+        for name, owner in _model_entries(body):
+            unique.setdefault(name, {"id": name, "owned_by": owner})
+        if unique:
+            return sorted(unique.values(), key=lambda item: item["id"])
+        reasons.append("没有返回模型")
+    raise TTSError(
+        "无法获取模型列表（"
+        + "；".join(dict.fromkeys(reasons))
+        + "），请手动填写模型 ID。"
+    )
