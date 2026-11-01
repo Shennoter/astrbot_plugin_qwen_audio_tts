@@ -1224,7 +1224,10 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         known = await self._known_personas()
         if known:
             lines.append("可配置人格：" + "、".join(known))
-        lines.append("用法：/语音设置 音色配置 设置 人格 模型 音色；语言 <人格> zh|en|ja 模型 音色；默认 模型 音色；删除 人格")
+        lines.append(
+            "用法：/语音设置 音色配置 列表；设置 人格 模型 音色；语言 人格 zh|en|ja 模型 音色；"
+            "默认 模型 音色；默认语言 zh|en|ja 模型 音色；删除 人格；开关 开|关"
+        )
         return "\n".join(lines)
 
     async def _voice_rule_command(self, value):
