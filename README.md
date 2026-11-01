@@ -6,7 +6,7 @@
 
 基于阿里云百炼语音服务的 AstrBot 插件，支持音色创建、文字朗读、随机语音回复与在线试听。
 
-![Version](https://img.shields.io/badge/version-1.2.1-blue)
+![Version](https://img.shields.io/badge/version-1.2.2-blue)
 ![AstrBot](https://img.shields.io/badge/AstrBot-plugin-7C3AED)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 
@@ -125,7 +125,7 @@ git clone https://github.com/Shennoter/astrbot_plugin_qwen_audio_tts.git
 | 人格音色规则（JSON） | 每个 AstrBot 人格一条规则，`persona` 填人格 ID（`persona_id`，通常与显示名相同），可填默认模型/音色，也可开启 `per_language` 后分别填 `zh_`、`en_`、`ja_` 配对 |
 | 默认音色 | 所有规则都没命中时使用；可开启“默认音色按语言区分”再分别配置中英日 |
 
-模型输入框可点“获取模型列表”读取已保存凭据可用的模型，作为候选提示；这只是一次便捷查询，失败或没有该接口时照常手动填写即可，音色 ID 没有列举接口，需要从复刻结果或控制台取得。
+模型与音色都是“可输入的下拉框”：点“获取模型列表”后模型可直接下拉选择；音色下拉列出音色库中的音色，并按“音色 ID 以模型名开头”自动筛选（例如选 `qwen-audio-3.1-tts-plus` 时只列 `qwen-audio-3.1-tts-plus-myvoice-…`）。没有获取列表、音色库为空或筛选不到时照常手动填写，已有配置不会被清空。音色 ID 本身没有列举接口，需要从复刻结果或控制台取得。
 
 规则示例：
 

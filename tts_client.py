@@ -364,7 +364,7 @@ def list_models(base, api_key, timeout=20):
     headers = {
         "Authorization": "Bearer " + str(api_key).strip(),
         "Accept": "application/json",
-        "User-Agent": "AstrBot-Qwen-Audio-Plugin/1.2.1",
+        "User-Agent": "AstrBot-Qwen-Audio-Plugin/1.2.2",
     }
     reasons = []
     for url in (models_url(base), base.rstrip("/") + "/models"):

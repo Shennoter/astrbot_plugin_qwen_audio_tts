@@ -6,6 +6,7 @@ import { ThemeProvider, createTheme } from "@mui/material/styles";
 import {
   Alert,
   AppBar,
+  Autocomplete,
   Avatar,
   Box,
   Button,
@@ -209,18 +210,33 @@ const voicesReady = (voices) => {
         )),
   );
 };
-const savedVoiceNames = (draft) => {
+const savedVoiceEntries = (draft) => {
   try {
     const list = JSON.parse(draft?.voice_library?.entries_json || "[]");
     return Array.isArray(list)
-      ? list
-          .map((entry) => entry?.name)
-          .filter((name) => typeof name === "string" && name)
+      ? list.filter(
+          (entry) =>
+            entry && typeof entry.voice === "string" && entry.voice.trim(),
+        )
       : [];
   } catch (error) {
     return [];
   }
 };
+const savedVoiceNames = (draft) =>
+  savedVoiceEntries(draft)
+    .map((entry) => entry?.name)
+    .filter((name) => typeof name === "string" && name);
+// Replica voice ids are prefixed with the model that created them, so the model
+// itself decides which voices can ever work.
+const voiceModelMatches = (voice, model) => {
+  const id = (voice || "").trim();
+  const prefix = (model || "").trim();
+  if (!id) return false;
+  if (!prefix) return true;
+  return id === prefix || id.startsWith(`${prefix}-`);
+};
+const uniqueStrings = (values) => Array.from(new Set(values.filter(Boolean)));
 const drawerWidth = 240;
 const cardSx = {
   borderRadius: 3,
@@ -239,7 +255,6 @@ function Field({
   apiKeySet,
   clearKey,
   onClearKey,
-  datalist,
 }) {
   const meta = schema[group].items[name];
   const path = `${group}.${name}`;
@@ -252,11 +267,7 @@ function Field({
       (meta.type === "int" && !Number.isInteger(Number(value))) ||
       (limit && (value < limit[0] || value > limit[1])));
   const hint = compact ? undefined : meta.hint;
-  const input = {
-    "data-field": path,
-    "aria-label": meta.description,
-    ...(datalist ? { list: datalist } : {}),
-  };
+  const input = { "data-field": path, "aria-label": meta.description };
   if (meta.type === "bool")
     return (
       <Box>
@@ -768,6 +779,109 @@ function App() {
   );
   const savedVoices = savedVoiceNames(draft);
   const defaultPair = draft ? defaultVoicePair(draft.voices) : ["", ""];
+  const libraryVoices = savedVoiceEntries(draft);
+  const usedVoices = uniqueStrings([
+    draft.voices.default_voice,
+    ...(draft.voices.default_per_language
+      ? voiceLanguages.map(([code]) => draft.voices[`default_${code}_voice`])
+      : []),
+    ...(voiceRules || []).flatMap((rule) => [
+      rule.voice,
+      ...voiceLanguages.map(([code]) => rule[`${code}_voice`]),
+    ]),
+  ]);
+  const modelSuggestions = () =>
+    uniqueStrings([
+      ...modelOptions,
+      draft.voices.default_model,
+      ...(draft.voices.default_per_language
+        ? voiceLanguages.map(([code]) => draft.voices[`default_${code}_model`])
+        : []),
+      ...(voiceRules || []).flatMap((rule) => [
+        rule.model,
+        ...voiceLanguages.map(([code]) => rule[`${code}_model`]),
+      ]),
+    ]).map((id) => ({ id, label: id }));
+  const voiceSuggestions = (model) => {
+    const chosen = [];
+    const seen = new Set();
+    const add = (id, name) => {
+      const voice = (id || "").trim();
+      if (!voice || seen.has(voice) || !voiceModelMatches(voice, model)) return;
+      seen.add(voice);
+      chosen.push({
+        id: voice,
+        label: name && name !== voice ? `${name}（${voice}）` : voice,
+      });
+    };
+    libraryVoices.forEach((entry) => add(entry.voice, entry.name));
+    usedVoices.forEach((voice) => add(voice, ""));
+    return {
+      options: chosen,
+      library: libraryVoices.length,
+      used: usedVoices.length,
+    };
+  };
+  const voiceHint = (model, fallback) => {
+    const { options, library, used } = voiceSuggestions(model);
+    if (!library && !used)
+      return "音色库为空：可直接填写音色 ID，或先在“音色复刻”页创建音色。";
+    if (!model) return `共 ${options.length} 支可选音色；填写模型后按模型筛选。`;
+    if (!options.length) return `没有模型 ${model} 的音色，仍可手动填写。`;
+    return (fallback ? `${fallback}；` : "") + `${options.length} 支匹配。`;
+  };
+  const comboField = ({
+    fieldKey,
+    label,
+    value,
+    onValue,
+    options,
+    helper,
+    placeholder,
+  }) => (
+    <Autocomplete
+      key={fieldKey}
+      freeSolo
+      size="small"
+      options={options}
+      value={value || null}
+      disabled={busy}
+      getOptionLabel={(option) =>
+        typeof option === "string" ? option : option?.id || option?.label || ""
+      }
+      filterOptions={(items, state) => {
+        const word = state.inputValue.trim().toLowerCase();
+        if (!word) return items;
+        return items.filter((item) =>
+          `${item.id} ${item.label}`.toLowerCase().includes(word),
+        );
+      }}
+      onChange={(event, next) =>
+        onValue(typeof next === "string" ? next.trim() : next?.id || "")
+      }
+      onInputChange={(event, text, reason) => {
+        if (reason === "input" || reason === "clear") onValue(text);
+      }}
+      renderOption={(props, option) => {
+        const { key, ...rest } = props;
+        return (
+          <Box component="li" key={key} {...rest}>
+            <Typography variant="body2" sx={{ wordBreak: "break-all" }}>
+              {option.label || option.id}
+            </Typography>
+          </Box>
+        );
+      }}
+      renderInput={(params) => (
+        <TextField
+          {...params}
+          label={label}
+          placeholder={placeholder}
+          helperText={helper}
+        />
+      )}
+    />
+  );
   const writeVoiceRules = (next) =>
     change("voices", "rules_json", JSON.stringify(next));
   const updateVoiceRule = (index, patch) => {
@@ -787,35 +901,36 @@ function App() {
     const next = personaOptions.find((name) => !used.has(name));
     if (next) writeVoiceRules([...(voiceRules || []), emptyVoiceRule(next)]);
   };
-  const voiceRuleField = (rule, index, prefix, label) => (
-    <Stack
-      direction={{ xs: "column", sm: "row" }}
-      spacing={2}
-      key={prefix || "default"}
-    >
-      <TextField
-        size="small"
-        fullWidth
-        label={`${label}模型`}
-        value={rule[`${prefix}model`] || ""}
-        disabled={busy}
-        slotProps={{ htmlInput: { list: "tts-model-options" } }}
-        onChange={(event) =>
-          updateVoiceRule(index, { [`${prefix}model`]: event.target.value })
-        }
-      />
-      <TextField
-        size="small"
-        fullWidth
-        label={`${label}音色 ID`}
-        value={rule[`${prefix}voice`] || ""}
-        disabled={busy}
-        onChange={(event) =>
-          updateVoiceRule(index, { [`${prefix}voice`]: event.target.value })
-        }
-      />
-    </Stack>
-  );
+  const voiceRuleField = (rule, index, prefix, label) => {
+    const modelKey = `${prefix}model`;
+    const voiceKey = `${prefix}voice`;
+    const model = rule[modelKey] || rule.model || "";
+    return (
+      <Stack
+        direction={{ xs: "column", sm: "row" }}
+        spacing={2}
+        key={prefix || "default"}
+      >
+        {comboField({
+          fieldKey: `rule-${index}-${modelKey}`,
+          label: `${label}模型`,
+          value: model,
+          onValue: (next) => updateVoiceRule(index, { [modelKey]: next }),
+          options: modelSuggestions(),
+          helper: modelOptions.length ? "可下拉选择或手填。" : "可手填模型 ID。",
+        })}
+        {comboField({
+          fieldKey: `rule-${index}-${voiceKey}`,
+          label: `${label}音色 ID`,
+          value: rule[voiceKey] || "",
+          onValue: (next) => updateVoiceRule(index, { [voiceKey]: next }),
+          options: voiceSuggestions(model).options,
+          helper: voiceHint(model),
+          placeholder: "qwen-audio-3.1-tts-plus-myvoice-…",
+        })}
+      </Stack>
+    );
+  };
   const profilePicker = () => (
     <Stack spacing={2}>
       <TextField
@@ -860,8 +975,39 @@ function App() {
     sourceProfileId === null
       ? data?.api_key_set
       : data?.profiles.find((p) => p.id === sourceProfileId)?.api_key_set;
+  const voiceSchemaMeta = (name) => data.schema.voices.items[name] || {};
+  const voiceField = (name) => {
+    if (/(^|_)model$/.test(name))
+      return comboField({
+        fieldKey: `voices.${name}`,
+        label: voiceSchemaMeta(name).description,
+        value: draft.voices[name],
+        onValue: (next) => change("voices", name, next),
+        options: modelSuggestions(),
+        helper: modelOptions.length
+          ? `已获取 ${modelOptions.length} 个模型，可下拉选择或手填。`
+          : "可手填模型 ID；点上方“获取模型列表”后可从下拉选择。",
+      });
+    const model =
+      draft.voices[name.replace(/voice$/, "model")] ||
+      (name === "default_voice" ? "" : draft.voices.default_model) ||
+      "";
+    return comboField({
+      fieldKey: `voices.${name}`,
+      label: voiceSchemaMeta(name).description,
+      value: draft.voices[name],
+      onValue: (next) => change("voices", name, next),
+      options: voiceSuggestions(model).options,
+      helper: voiceHint(model),
+      placeholder: "qwen-audio-3.1-tts-plus-myvoice-…",
+    });
+  };
   const field = (group, name, compact = false) =>
-    ["delivery", "translation"].includes(group) && name === "provider_id" ? (
+    group === "voices" &&
+    (/(^|_)model$/.test(name) || /(^|_)voice$/.test(name)) ? (
+      <Box key={`${group}.${name}`}>{voiceField(name)}</Box>
+    ) : ["delivery", "translation"].includes(group) &&
+      name === "provider_id" ? (
       <TextField
         key={`${group}.${name}`}
         select
@@ -890,11 +1036,6 @@ function App() {
         value={draft[group][name]}
         onChange={change}
         compact={compact}
-        datalist={
-          group === "voices" && /(^|_)model$/.test(name)
-            ? "tts-model-options"
-            : undefined
-        }
         apiKeySet={profileKeySet}
         clearKey={clearKey}
         onClearKey={() => {
@@ -1030,7 +1171,7 @@ function App() {
       <Box sx={{ mt: "auto", pt: 4, ml: 1 }}>
         <Chip
           size="small"
-          label="v1.2.1"
+          label="v1.2.2"
           variant="outlined"
           sx={{ color: "text.secondary", borderColor: "divider" }}
         />
@@ -1474,11 +1615,6 @@ function App() {
                 )}
                 {page === "voices" && (
                   <Stack spacing={3}>
-                    <datalist id="tts-model-options">
-                      {modelOptions.map((id) => (
-                        <option key={id} value={id} />
-                      ))}
-                    </datalist>
                     <Card sx={cardSx}>
                       <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
                         <Stack
@@ -1504,7 +1640,7 @@ function App() {
                           color="text.secondary"
                           sx={{ display: "block", mb: 2 }}
                         >
-                          所有人格规则都没有命中时使用；未配置时朗读会提示到本页填写。“获取模型列表”读取已保存凭据可用的模型，仅作候选提示，不会覆盖已填写的值。
+                          所有人格规则都没有命中时使用；未配置时朗读会提示到本页填写。音色 ID 以模型名开头，“获取模型列表”后模型可下拉选择，音色下拉只列出与该模型匹配的已保存音色，两者都仍可手动输入。
                         </Typography>
                         <Stack spacing={2.5}>
                           {field("voices", "enabled")}
@@ -1556,7 +1692,7 @@ function App() {
                         </Stack>
                         <Typography variant="caption" color="text.secondary">
                           AstrBot
-                          每次朗读时读取当前会话人格；同一人格只能有一条规则，模型与音色必须成对填写。人格在
+                          每次朗读时读取当前会话人格；同一人格只能有一条规则，模型与音色必须成对填写。模型可取下拉（需先“获取模型列表”），音色按“模型 ID 前缀”筛选音色库，两者都仍可手填。人格在
                           AstrBot 人格管理中创建，会话里用 /persona 切换。
                         </Typography>
                         {!voiceRules && (
