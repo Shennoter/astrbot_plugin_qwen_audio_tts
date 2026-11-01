@@ -12,7 +12,7 @@ from pathlib import Path
 from astrbot.api import logger
 
 from .delivery import parse_plan
-from .voices import default_pair, speech_connection
+from .voices import default_pair, fallback_pair, speech_connection
 from .enrollment import MAX_AUDIO, MAX_MULTIPART, EnrollmentManager, validate_wav
 from .settings import public_settings, revision, snapshot, validate_draft, save_profile
 from .tts_client import TTSError
@@ -59,8 +59,11 @@ class PanelMixin:
         cfg = snapshot(self.config)
         if not cfg["connection"]["api_key"] or not cfg["connection"]["workspace"]:
             raise TTSError("请先保存 API Key 和业务空间完整域名。")
-        # Enrollment logs the model, so expose the resolved default pair here.
+        # Enrollment logs the model, so expose a resolved pair even when only
+        # per-language entries are configured.
         model, voice = default_pair(cfg)
+        if not model:
+            model = fallback_pair(cfg)[0]
         cfg["connection"].update(model=model, voice=voice)
         return cfg
 

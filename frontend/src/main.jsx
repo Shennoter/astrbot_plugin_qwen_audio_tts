@@ -1584,7 +1584,9 @@ function App() {
                           <Button
                             startIcon={<AddIcon />}
                             variant="outlined"
-                            disabled={busy || !personaOptions.length}
+                            disabled={
+                              busy || !voiceRules || !personaOptions.length
+                            }
                             onClick={addVoiceRule}
                           >
                             添加人格规则

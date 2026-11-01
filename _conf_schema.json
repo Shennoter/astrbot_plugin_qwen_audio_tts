@@ -62,7 +62,7 @@
         "description": "人格音色规则（JSON）",
         "type": "text",
         "default": "[]",
-        "hint": "JSON 数组，每个会话人格一条，顺序不影响匹配。示例：[{\"persona\":\"kuchiba-chisa\",\"per_language\":false,\"model\":\"qwen-audio-3.1-tts-plus\",\"voice\":\"qwen-audio-3.1-tts-plus-myvoice-xxxx\"}]。persona 填 AstrBot 里的人格名称；per_language 开启后可另填 zh_model/zh_voice、en_model/en_voice、ja_model/ja_voice，某语言留空则用该规则的默认模型与音色。同一人格只能有一条规则，模型与音色必须成对填写；也可以直接用 /语音设置 音色配置 设置 人格 模型 音色 修改。"
+        "hint": "JSON 数组，每个会话人格一条，顺序不影响匹配。示例：[{\"persona\":\"kuchiba-chisa\",\"per_language\":false,\"model\":\"qwen-audio-3.1-tts-plus\",\"voice\":\"qwen-audio-3.1-tts-plus-myvoice-xxxx\"}]。persona 填 AstrBot 里的人格 ID（人格管理中的 persona_id，通常与显示名相同）；per_language 开启后可另填 zh_model/zh_voice、en_model/en_voice、ja_model/ja_voice，某语言留空则用该规则的默认模型与音色。同一人格只能有一条规则，模型与音色必须成对填写；也可以直接用 /语音设置 音色配置 设置 人格 模型 音色 修改。"
       },
       "default_per_language": {
         "description": "默认音色按语言区分",

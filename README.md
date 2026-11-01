@@ -122,7 +122,7 @@ git clone https://github.com/Shennoter/astrbot_plugin_qwen_audio_tts.git
 | 字段 | 说明 |
 | --- | --- |
 | 启用音色配置 | 总开关；关闭后忽略所有人格规则，只用默认音色 |
-| 人格音色规则（JSON） | 每个 AstrBot 人格一条规则，`persona` 填人格名称，可填默认模型/音色，也可开启 `per_language` 后分别填 `zh_`、`en_`、`ja_` 配对 |
+| 人格音色规则（JSON） | 每个 AstrBot 人格一条规则，`persona` 填人格 ID（`persona_id`，通常与显示名相同），可填默认模型/音色，也可开启 `per_language` 后分别填 `zh_`、`en_`、`ja_` 配对 |
 | 默认音色 | 所有规则都没命中时使用；可开启“默认音色按语言区分”再分别配置中英日 |
 
 规则示例：
@@ -205,7 +205,7 @@ git clone https://github.com/Shennoter/astrbot_plugin_qwen_audio_tts.git
 | 问题 | 排查方法 |
 | --- | --- |
 | 无法合成或音色不可用 | 核对 API Key、地域、业务空间、模型和音色归属；切换模型时同步切换音色 |
-| 换人格后音色没变 | 确认“音色配置”已启用、人格名称与 AstrBot 中一致（可用 `/语音设置 音色配置 列表` 对照），会话确实通过 `/persona` 切到了该人格 |
+| 换人格后音色没变 | 确认“音色配置”已启用、规则里的 `persona` 与 AstrBot 的 `persona_id` 一致（可用 `/语音设置 音色配置 列表` 对照），会话确实通过 `/persona` 切到了该人格 |
 | 某个语言没有用自己的音色 | 该人格规则未开启“按语言”或该语言未成对填写时，会回退到规则默认配对或默认音色 |
 | 找不到 WebUI 或打开失败 | 更新 AstrBot，确认已登录 Dashboard 且拥有插件权限，再重载插件 |
 | 自然语言没有生成语音 | 检查聊天模型是否支持工具调用，以及插件开关、人设和会话的工具权限 |

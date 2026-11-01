@@ -46,6 +46,7 @@ from .tts_client import TTSError, build_payload, number, synthesize_http, worksp
 from .voices import (
     LANGUAGE_CODES,
     PAIR_FIELDS,
+    default_pair,
     normalize_voices,
     parse_rules,
     speech_connection,
@@ -117,6 +118,12 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
                 )
         except Exception as exc:  # noqa: BLE001 - Never block plugin startup on config.
             logger.warning("Voice settings migration skipped (%s).", type(exc).__name__)
+        model, voice = default_pair(snapshot(self.config))
+        if not (model and voice):
+            logger.warning(
+                "音色配置尚未填写完整的默认模型与音色，朗读会提示先配置；"
+                "可在 WebUI 的“音色配置”页或 /语音设置 音色配置 中设置。"
+            )
         try:
             web = import_module("astrbot.api.web")
         except ImportError:
@@ -223,17 +230,28 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
                 provider_settings = self.context.get_config(origin).get(
                     "provider_settings", {}
                 )
-                _, selected, _, webchat_default = await manager.resolve_selected_persona(
+                persona_id, selected, _, webchat_default = await manager.resolve_selected_persona(
                     umo=origin,
                     conversation_persona_id=getattr(conversation, "persona_id", None),
                     platform_name=event.get_platform_name(),
                     provider_settings=provider_settings,
                 )
-                if selected is not None and not webchat_default:
-                    if isinstance(selected, dict):
-                        persona = selected.get("name")
-                    else:
-                        persona = getattr(selected, "name", None)
+                if not webchat_default:
+                    # AstrBot stores the rules against persona_id; the display
+                    # name is only a fallback for builds that return one.
+                    selected_name = (
+                        selected.get("name")
+                        if isinstance(selected, dict)
+                        else getattr(selected, "name", None)
+                    )
+                    for candidate in (persona_id, selected_name):
+                        if (
+                            isinstance(candidate, str)
+                            and candidate.strip()
+                            and candidate.strip() not in ("[%None]", "_chatui_default_")
+                        ):
+                            persona = candidate.strip()
+                            break
         except Exception as exc:  # noqa: BLE001 - Persona lookup must never break speech.
             logger.debug(
                 "Persona lookup failed (%s); using the default voice.",
@@ -363,8 +381,10 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             raise TTSError("固定参数模式不接受聊天中的临时参数；请在设置中调整。")
         if mode == "动态参数":
             _, connection = speech_connection(cfg, text, language, persona)
-            if not connection["api_key"] or not connection["voice"]:
-                raise TTSError("请先配置 API Key 和音色。")
+            if not connection.get("api_key"):
+                raise TTSError("请先配置 API Key。")
+            if not connection.get("voice"):
+                raise TTSError("请先在插件的「音色配置」中填写默认音色。")
             workspace_base(cfg["connection"]["workspace"])
             delivery_instruction, delivery_plan = await plan_dynamic(
                 self.context,
@@ -1141,15 +1161,9 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             return "词典未保存：" + str(exc)
 
     def _saved_voice_pair(self, name):
-        """Resolve one saved voice by name into its model/voice pair."""
-        matches = [
-            entry
-            for entry in parse_saved_voices(snapshot(self.config)["voice_library"]["entries_json"])
-            if entry["name"] == name
-        ]
-        if len(matches) != 1:
-            raise TTSError("未找到唯一的已保存音色名称，请先在页面中保存音色。")
-        return matches[0]["model"], matches[0]["voice"]
+        """Resolve one saved voice by name, with the same checks as /语音设置 音色."""
+        voices = saved_voice_settings(self.config, str(name))
+        return voices["default_model"], voices["default_voice"]
 
     async def _known_personas(self):
         """List AstrBot persona names so the command can show valid values."""

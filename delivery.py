@@ -169,13 +169,15 @@ async def synthesize_segments(
             part for part in (guide, segment["instruction"]) if part
         )
         code, connection = speech_connection(cfg, segment["text"], language, persona)
+        if not connection.get("model") or not connection.get("voice"):
+            raise TTSError("请先在插件的「音色配置」中填写默认音色。")
         audio = compose_settings(
             cfg["audio"], cfg["pronunciation"], code, hot_fix, instruction
         )
         audio = apply_direction(audio, local_guide, cfg["delivery"])
         payload = build_payload(
-            connection["model"],
-            connection["voice"],
+            connection.get("model", ""),
+            connection.get("voice", ""),
             segment["text"],
             audio,
             code,

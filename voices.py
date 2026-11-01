@@ -32,12 +32,19 @@ RULE_HINT = (
 )
 
 
-def _pair(model, voice, label):
-    """Validate one model/voice pair; both empty means "not configured"."""
+def _pair(model, voice, label, allow_empty_voice=False):
+    """Validate one model/voice pair; both empty means "not configured".
+
+    The default model ships with a schema default while its voice starts empty,
+    so the default pair may keep the model and wait for a voice; every other
+    pair is typed by the user and must be complete.
+    """
     if not isinstance(model, str) or not isinstance(voice, str):
         raise TTSError(f"{label}的模型和音色 ID 必须为文字。")
     model, voice = model.strip(), voice.strip()
     if bool(model) != bool(voice):
+        if allow_empty_voice and model and not voice:
+            return model_id(model), ""
         raise TTSError(f"{label}的模型和音色 ID 必须一起填写，或一起留空。")
     if not model:
         return "", ""
@@ -77,9 +84,14 @@ def parse_rules(raw):
             if not isinstance(value, str):
                 raise TTSError(f"音色规则 {persona} 的 {field} 必须为文字。")
             rule[field] = value.strip()
-        for prefix, label in (("", "默认"), ("zh_", "汉语"), ("en_", "英语"), ("ja_", "日语")):
+        for prefix, label in (
+            ("", f"音色规则 {persona}"),
+            ("zh_", f"音色规则 {persona}（汉语）"),
+            ("en_", f"音色规则 {persona}（英语）"),
+            ("ja_", f"音色规则 {persona}（日语）"),
+        ):
             model, voice = _pair(
-                rule[f"{prefix}model"], rule[f"{prefix}voice"], f"音色规则 {persona} 的{label}"
+                rule[f"{prefix}model"], rule[f"{prefix}voice"], label
             )
             rule[f"{prefix}model"], rule[f"{prefix}voice"] = model, voice
         if not any(rule[field] for field in ("model", "zh_model", "en_model", "ja_model")):
@@ -110,11 +122,17 @@ def normalize_voices(voices):
         "rules_json": "[]" if not rules else json.dumps(rules, ensure_ascii=False),
         "default_per_language": per_language,
     }
-    for prefix, label in (("", "默认"), ("zh_", "汉语"), ("en_", "英语"), ("ja_", "日语")):
+    for prefix, label, allow_empty_voice in (
+        ("", "默认音色", True),
+        ("zh_", "默认汉语音色", False),
+        ("en_", "默认英语音色", False),
+        ("ja_", "默认日语音色", False),
+    ):
         model, voice = _pair(
             voices.get(f"default_{prefix}model", ""),
             voices.get(f"default_{prefix}voice", ""),
-            f"默认音色的{label}",
+            label,
+            allow_empty_voice,
         )
         result[f"default_{prefix}model"], result[f"default_{prefix}voice"] = model, voice
     return result
@@ -131,7 +149,7 @@ def _stored_pair(entry, model_key, voice_key, label, allow_partial=False):
     voice = entry.get(voice_key, "")
     if bool(model) != bool(voice):
         if allow_partial and model and not voice:
-            return "", ""
+            return model, ""
         raise TTSError(f"{label}的模型和音色 ID 必须一起填写，或一起留空。")
     return model, voice
 
@@ -143,12 +161,12 @@ def _pair_for(entry, code):
             entry,
             f"{code}_model",
             f"{code}_voice",
-            f"音色规则 {entry.get('persona', '')} 的{LANGUAGE_NAMES[code]}",
+            f"音色规则 {entry.get('persona', '')}（{LANGUAGE_NAMES[code]}）",
         )
         if model:
             return model, voice, code
     model, voice = _stored_pair(
-        entry, "model", "voice", f"音色规则 {entry.get('persona', '')} 的默认"
+        entry, "model", "voice", f"音色规则 {entry.get('persona', '')}"
     )
     if model:
         return model, voice, ""
@@ -178,7 +196,8 @@ def _matching_rule(voices, persona):
         return None
     try:
         rules = parse_rules(voices.get("rules_json", "[]"))
-    except TTSError:
+    except TTSError as exc:
+        _debug("Voice rules ignored (%s); using the default voice.", exc)
         return None
     return next((rule for rule in rules if rule["persona"] == persona), None)
 
@@ -222,6 +241,32 @@ def _debug(message, *args):
     except ImportError:
         return
     logger.debug(message, *args)
+
+
+def fallback_pair(config):
+    """Return any configured pair, for callers that only need a model id.
+
+    The default rule wins; language entries and persona rules follow so that a
+    voice-cloning page still has a model when only per-language pairs exist.
+    """
+    voices = config.get("voices", {})
+    for model_key, voice_key in [("default_model", "default_voice")] + [
+        (f"default_{code}_model", f"default_{code}_voice") for code in LANGUAGE_CODES
+    ]:
+        model, voice = voices.get(model_key, ""), voices.get(voice_key, "")
+        if model and voice:
+            return model, voice
+    try:
+        rules = parse_rules(voices.get("rules_json", "[]"))
+    except TTSError:
+        return "", ""
+    for rule in rules:
+        for model_key, voice_key in [("model", "voice")] + [
+            (f"{code}_model", f"{code}_voice") for code in LANGUAGE_CODES
+        ]:
+            if rule.get(model_key) and rule.get(voice_key):
+                return rule[model_key], rule[voice_key]
+    return "", ""
 
 
 def speech_connection(config, text, language=None, persona=None):

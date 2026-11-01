@@ -837,6 +837,18 @@ class VoiceRuleCommandTests(h.PluginTests):
         self.assertEqual(self.config["voices"]["default_zh_model"], "model-zh")
         self.assertEqual(self.config["voices"]["default_zh_voice"], "voice-zh")
 
+    async def test_saved_voice_from_another_workspace_is_rejected(self):
+        pair = {
+            "name": "别处音色",
+            "model": "qwen-audio-3.0-tts-flash",
+            "voice": "qwen-audio-3.0-tts-flash-example",
+            "workspace": "ws-other.cn-beijing.maas.aliyuncs.com",
+        }
+        self.config["voice_library"] = {"entries_json": json.dumps([pair])}
+        with self.assertRaisesRegex(TTSError, "业务空间"):
+            await self.plugin._voice_rule_command("默认 别处音色")
+        self.assertEqual(self.config["voices"]["default_voice"], "qwen-audio-3.1-tts-plus-test-voice")
+
     async def test_saved_voice_name_expands_and_switch_toggles(self):
         pair = {
             "name": "千咲音色",
@@ -870,6 +882,16 @@ class VoiceRuleCommandTests(h.PluginTests):
             with self.subTest(value=value), self.assertRaises(TTSError):
                 await self.plugin._voice_rule_command(value)
         self.assertEqual(dict(self.config), before)
+
+    async def test_clone_connection_falls_back_to_a_language_pair(self):
+        self.config["voices"].update(
+            default_voice="",
+            default_per_language=True,
+            default_zh_model="qwen-audio-3.1-tts-plus",
+            default_zh_voice="qwen-audio-3.1-tts-plus-myvoice-zh",
+        )
+        cfg = self.plugin._clone_connection()
+        self.assertEqual(cfg["connection"]["model"], "qwen-audio-3.1-tts-plus")
 
     async def test_admin_command_routes_rules_and_legacy_settings(self):
         event = h.Event()

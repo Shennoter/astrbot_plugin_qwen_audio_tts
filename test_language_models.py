@@ -132,6 +132,36 @@ class LanguageModelTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(network.call_args.args[2]["model"], "model-en")
                 self.config["voices"]["enabled"] = True
 
+    async def test_persona_id_wins_over_the_display_name(self):
+        self.enable_persona(persona="persona-id-1")
+        self.context.persona_manager = types.SimpleNamespace(
+            resolve_selected_persona=AsyncMock(
+                return_value=("persona-id-1", {"name": "显示名"}, None, False)
+            )
+        )
+        self.context.conversation_manager = types.SimpleNamespace(
+            get_curr_conversation_id=AsyncMock(return_value="cid"),
+            get_conversation=AsyncMock(return_value=types.SimpleNamespace(persona_id="persona-id-1")),
+        )
+        event = h.Event("你好")
+        with patch.object(h.main, "synthesize_http", return_value=h.wav_bytes()) as network:
+            await self.plugin.random_voice_reply(event)
+        self.assertEqual(network.call_args.args[2]["model"], "persona-model")
+        self.assertEqual(await self.plugin._current_persona(event), "persona-id-1")
+
+    async def test_missing_voice_is_reported_instead_of_keyerror(self):
+        self.config["voices"]["default_voice"] = ""
+        self.config["delivery"]["mode"] = "动态参数"
+        with patch.object(h.main, "plan_dynamic", new=AsyncMock(return_value=("", None))):
+            with self.assertRaisesRegex(TTSError, "音色配置"):
+                await self.plugin._speak("Hello")
+        self.config["delivery"]["mode"] = "混合"
+        with self.assertRaisesRegex(TTSError, "音色配置"):
+            await self.plugin._speak(
+                "你好再见",
+                delivery_plan={"segments": [{"text": "你好"}, {"text": "再见"}]},
+            )
+
     async def test_persona_lookup_uses_the_current_conversation(self):
         self.enable_persona()
         self.attach_persona("kuchiba-chisa")

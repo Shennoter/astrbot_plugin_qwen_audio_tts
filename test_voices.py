@@ -11,6 +11,7 @@ from . import test_plugin as h
 from .tts_client import TTSError
 from .voices import (
     default_pair,
+    fallback_pair,
     normalize_voices,
     parse_rules,
     resolve_voice,
@@ -114,6 +115,25 @@ class VoiceResolutionTests(unittest.TestCase):
         self.assertEqual(resolve_voice(config, None, "en")[0], "en-model")
         self.assertEqual(resolve_voice(config, None, "ja")[0], "default-model")
 
+    def test_default_model_without_a_voice_still_reports_the_model(self):
+        config = self.config()
+        config["voices"]["default_voice"] = ""
+        self.assertEqual(default_pair(config), ("default-model", ""))
+        self.assertEqual(
+            resolve_voice(config, "kuchiba-chisa", "zh"),
+            ("default-model", "", ""),
+        )
+
+    def test_fallback_pair_prefers_default_then_language_then_rules(self):
+        config = self.config(default_voice="", default_per_language=True)
+        config["voices"]["default_en_model"] = "en-model"
+        config["voices"]["default_en_voice"] = "en-voice"
+        self.assertEqual(fallback_pair(config), ("en-model", "en-voice"))
+        config = self.config(default_voice="")
+        config["voices"]["rules_json"] = json.dumps([rule(model="rule-model", voice="rule-voice")])
+        self.assertEqual(fallback_pair(config), ("rule-model", "rule-voice"))
+        self.assertEqual(fallback_pair(self.config(default_voice="")), ("", ""))
+
     def test_disabled_switch_ignores_every_persona_rule(self):
         config = self.config([rule()], enabled=False)
         self.assertEqual(resolve_voice(config, "kuchiba-chisa", "auto")[0], "default-model")
@@ -210,6 +230,14 @@ class MigrationTests(unittest.TestCase):
         self.assertNotIn("voice", config["connection"])
         self.assertEqual(config["voices"]["default_voice"], "legacy-voice")
         self.assertFalse(settings.migrate_voices(config))
+
+    def test_fresh_install_saves_with_the_shipped_default_model(self):
+        candidate = settings.validate_draft({}, {"connection": {"api_key": "abc"}})
+        self.assertEqual(candidate["voices"]["default_model"], "qwen-audio-3.1-tts-plus")
+        self.assertEqual(candidate["voices"]["default_voice"], "")
+        # A blank default voice is reported by speech, not by the settings panel.
+        model, voice = default_pair(candidate)
+        self.assertEqual((model, voice), ("qwen-audio-3.1-tts-plus", ""))
 
     def test_legacy_dashboard_patch_still_saves(self):
         config = h.defaults()
