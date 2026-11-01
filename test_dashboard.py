@@ -9,6 +9,7 @@ import io
 import json
 import struct
 import tempfile
+import types
 import unittest
 import wave
 from pathlib import Path
@@ -124,7 +125,7 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(value["config"]["connection"]["api_key"], "")
         self.assertNotIn("test-key", json.dumps(value))
-        self.assertNotIn("options", value["schema"]["connection"]["items"]["model"])
+        self.assertNotIn("options", value["schema"]["voices"]["items"]["default_model"])
         self.assertTrue(
             value["config"]["connection"]["workspace"].endswith(".aliyuncs.com")
         )
@@ -212,7 +213,7 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         selected = public["profiles"][1]
         candidate = settings.validate_draft(self.config, selected["config"], True, selected["id"])
         self.assertEqual(candidate["connection"]["api_key"], "")
-        self.assertEqual(candidate["connection"]["voice"], "legacy-voice")
+        self.assertEqual(candidate["voices"]["default_voice"], "legacy-voice")
 
     async def test_saved_voices_persist_and_switch_model_voice_together(self):
         pair = {
@@ -245,7 +246,7 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
             event, "saved_voice", pair["name"]
         )
         self.assertIn("管理员", denied)
-        self.assertNotEqual(self.config["connection"]["model"], pair["model"])
+        self.assertNotEqual(self.config["voices"]["default_model"], pair["model"])
         event.admin = True
         result = await self.plugin.natural_voice_control(
             event, "saved_voice", pair["name"]
@@ -416,13 +417,14 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
                 draft = settings.validate_draft(
                     self.config,
                     {
-                        "connection": {"model": model, "voice": pair["voice"]},
+                        "voices": {"default_model": model, "default_voice": pair["voice"]},
                         "voice_library": {"entries_json": json.dumps([pair])},
                     },
                 )
-                selected = settings.saved_voice_connection(draft, pair["name"])
+                selected = settings.saved_voice_settings(draft, pair["name"])
                 self.assertEqual(
-                    (selected["model"], selected["voice"]), (model, pair["voice"])
+                    (selected["default_model"], selected["default_voice"]),
+                    (model, pair["voice"]),
                 )
                 with patch.object(
                     h.main, "synthesize_http", return_value=h.wav_bytes()
@@ -434,9 +436,9 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         draft = settings.validate_draft(
             self.config,
             {
-                "connection": {
-                    "model": "qwen-audio-3.0-tts-flash",
-                    "voice": "qwen-audio-3.0-tts-flash-myvoice-test",
+                "voices": {
+                    "default_model": "qwen-audio-3.0-tts-flash",
+                    "default_voice": "qwen-audio-3.0-tts-flash-myvoice-test",
                 }
             },
         )
@@ -526,6 +528,7 @@ class EnrollmentTests(unittest.IsolatedAsyncioTestCase):
         self.connection.update(
             api_key="test-secret",
             workspace="ws-test.cn-beijing.maas.aliyuncs.com",
+            model="qwen-audio-3.1-tts-plus",
             voice="",
         )
         self.preferences = cfg["cloning"]
@@ -760,6 +763,112 @@ class WavAndHTTPTests(unittest.TestCase):
         ):
             enrollment.enrollment_http(connection, "create_voice")
         self.assertNotIn("secret", str(error.exception))
+class VoiceRuleCommandTests(h.PluginTests):
+    """Chat-side management of the per-persona voice rules."""
+
+    async def test_list_reports_defaults_rules_and_known_personas(self):
+        self.context.persona_manager = types.SimpleNamespace(
+            get_all_personas=AsyncMock(
+                return_value=[
+                    types.SimpleNamespace(persona_id="kuchiba-chisa"),
+                    {"persona_id": "whale-chan"},
+                ]
+            )
+        )
+        text = await self.plugin._voice_rule_command("列表")
+        self.assertIn("音色配置：启用开", text)
+        self.assertIn(self.config["voices"]["default_voice"], text)
+        self.assertIn("尚未配置任何人格规则", text)
+        self.assertIn("kuchiba-chisa", text)
+        self.assertIn("whale-chan", text)
+        self.assertIn("/语音设置 音色配置", text)
+
+    async def test_set_language_update_and_delete_keep_one_rule_per_persona(self):
+        await self.plugin._voice_rule_command("设置 kuchiba-chisa model-a voice-a")
+        rules = json.loads(self.config["voices"]["rules_json"])
+        self.assertEqual(len(rules), 1)
+        self.assertEqual((rules[0]["model"], rules[0]["voice"]), ("model-a", "voice-a"))
+        self.assertFalse(rules[0]["per_language"])
+        self.assertTrue(self.config.saved)
+        # Updating the same persona must replace the rule instead of appending one.
+        await self.plugin._voice_rule_command("语言 kuchiba-chisa ja model-ja voice-ja")
+        rules = json.loads(self.config["voices"]["rules_json"])
+        self.assertEqual(len(rules), 1)
+        self.assertTrue(rules[0]["per_language"])
+        self.assertEqual((rules[0]["ja_model"], rules[0]["ja_voice"]), ("model-ja", "voice-ja"))
+        self.assertEqual(rules[0]["model"], "model-a")
+        message = await self.plugin._voice_rule_command("删除 kuchiba-chisa")
+        self.assertIn("已删除", message)
+        self.assertEqual(json.loads(self.config["voices"]["rules_json"]), [])
+        with self.assertRaises(TTSError):
+            await self.plugin._voice_rule_command("删除 kuchiba-chisa")
+
+    async def test_default_and_default_language_pairs_are_saved(self):
+        await self.plugin._voice_rule_command("默认 model-default voice-default")
+        self.assertEqual(self.config["voices"]["default_model"], "model-default")
+        self.assertEqual(self.config["voices"]["default_voice"], "voice-default")
+        await self.plugin._voice_rule_command("默认语言 zh model-zh voice-zh")
+        self.assertTrue(self.config["voices"]["default_per_language"])
+        self.assertEqual(self.config["voices"]["default_zh_model"], "model-zh")
+        self.assertEqual(self.config["voices"]["default_zh_voice"], "voice-zh")
+
+    async def test_saved_voice_name_expands_and_switch_toggles(self):
+        pair = {
+            "name": "千咲音色",
+            "model": "qwen-audio-3.0-tts-flash",
+            "voice": "qwen-audio-3.0-tts-flash-example",
+        }
+        self.config["voice_library"] = {"entries_json": json.dumps([pair])}
+        await self.plugin._voice_rule_command("设置 kuchiba-chisa 千咲音色")
+        rule = json.loads(self.config["voices"]["rules_json"])[0]
+        self.assertEqual((rule["model"], rule["voice"]), (pair["model"], pair["voice"]))
+        await self.plugin._voice_rule_command("默认 千咲音色")
+        self.assertEqual(self.config["voices"]["default_voice"], pair["voice"])
+        message = await self.plugin._voice_rule_command("开关 关")
+        self.assertIn("已关闭", message)
+        self.assertFalse(self.config["voices"]["enabled"])
+
+    async def test_invalid_usage_is_rejected_without_touching_settings(self):
+        before = copy.deepcopy(dict(self.config))
+        cases = (
+            "设置 只有人格",
+            "设置 人格 只有模型",
+            "语言 人格 xx model voice",
+            "语言 人格 ja model",
+            "默认",
+            "默认语言 ja voice-only",
+            "开关 也许",
+            "未知动作",
+            "删除",
+        )
+        for value in cases:
+            with self.subTest(value=value), self.assertRaises(TTSError):
+                await self.plugin._voice_rule_command(value)
+        self.assertEqual(dict(self.config), before)
+
+    async def test_admin_command_routes_rules_and_legacy_settings(self):
+        event = h.Event()
+        responses = [
+            result.chain[0].text
+            async for result in self.plugin.voice_settings(event, "音色配置", "默认 m v")
+        ]
+        self.assertIn("默认音色已保存", responses[0])
+        responses = [
+            result.chain[0].text
+            async for result in self.plugin.voice_settings(event, "音色配置", "设置 人格 m v")
+        ]
+        self.assertIn("音色已保存", responses[0])
+        responses = [
+            result.chain[0].text
+            async for result in self.plugin.voice_settings(event, "概率", "35")
+        ]
+        self.assertIn("已保存", responses[0])
+        self.assertEqual(self.config["reply"]["probability"], 35)
+
+    async def test_blank_voice_reports_the_new_section(self):
+        self.config["voices"]["default_voice"] = ""
+        with self.assertRaisesRegex(TTSError, "音色配置"):
+            await self.plugin._speak("你好")
 
 
 if __name__ == "__main__":

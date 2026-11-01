@@ -343,7 +343,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.config = defaults()
         self.config["connection"]["workspace"] = "ws-example"
         self.config["connection"]["api_key"] = "test-key"
-        self.config["connection"]["voice"] = "qwen-audio-3.1-tts-plus-test-voice"
+        self.config["voices"]["default_voice"] = "qwen-audio-3.1-tts-plus-test-voice"
         self.config["reply"]["probability"] = 100
         self.context = types.SimpleNamespace(
             get_provider_by_id=Mock(
@@ -524,11 +524,11 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.context.get_using_tts_provider_async.assert_not_called()
         self.assertEqual(network.call_args.args[1], "test-key")
         self.assertEqual(
-            network.call_args.args[2]["model"], self.config["connection"]["model"]
+            network.call_args.args[2]["model"], self.config["voices"]["default_model"]
         )
         self.assertEqual(
             network.call_args.args[2]["input"]["voice"],
-            self.config["connection"]["voice"],
+            self.config["voices"]["default_voice"],
         )
 
     async def test_shutdown_stops_new_synthesis(self):
@@ -963,9 +963,13 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("patch_builtin", fields)
 
     async def test_missing_credentials_fail_before_network(self):
-        for key in ("api_key", "voice", "workspace"):
-            saved = self.config["connection"][key]
-            self.config["connection"][key] = ""
+        for group, key in (
+            ("connection", "api_key"),
+            ("connection", "workspace"),
+            ("voices", "default_voice"),
+        ):
+            saved = self.config[group][key]
+            self.config[group][key] = ""
             with (
                 self.subTest(key=key),
                 patch.object(main, "synthesize_http") as network,
@@ -973,7 +977,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await self.plugin._speak("hello")
             network.assert_not_called()
-            self.config["connection"][key] = saved
+            self.config[group][key] = saved
 
     async def test_preview_uses_current_settings_without_random_or_manual_command(self):
         self.config["reply"]["probability"] = 0

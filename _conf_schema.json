@@ -16,18 +16,6 @@
         "default": "",
         "hint": "填写完整域名，例如 ws-xxx.cn-beijing.maas.aliyuncs.com 或 ws-xxx.ap-southeast-1.maas.aliyuncs.com。"
       },
-      "model": {
-        "description": "语音模型",
-        "type": "string",
-        "default": "qwen-audio-3.1-tts-plus",
-        "hint": "自由输入模型 ID，例如 cosyvoice-v3.5-plus 或 qwen-audio-3.1-tts-plus；不限制模型名称，实际支持范围由云端 HTTP 接口决定，音色需与模型匹配。"
-      },
-      "voice": {
-        "description": "音色 ID",
-        "type": "string",
-        "default": "",
-        "hint": "必填。填写所选模型支持的系统音色，或自己账号下已创建的完整复刻音色 ID；不需要在 AstrBot 模型管理创建 TTS 提供商。"
-      },
       "timeout": {
         "description": "单次网络操作超时（秒）",
         "type": "int",
@@ -60,51 +48,75 @@
       }
     }
   },
-  "language_models": {
-    "description": "按语言选择模型与音色",
+  "voices": {
+    "description": "音色配置",
     "type": "object",
     "items": {
       "enabled": {
-        "description": "启用按语言选择模型",
+        "description": "启用音色配置",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后按当前会话的人格选择模型与音色；关闭时只使用下方的默认音色。人格在 AstrBot 人格管理中切换，插件按会话自动读取，不需要在这里重复配置人格内容。"
+      },
+      "rules_json": {
+        "description": "人格音色规则（JSON）",
+        "type": "text",
+        "default": "[]",
+        "hint": "JSON 数组，每个会话人格一条，顺序不影响匹配。示例：[{\"persona\":\"kuchiba-chisa\",\"per_language\":false,\"model\":\"qwen-audio-3.1-tts-plus\",\"voice\":\"qwen-audio-3.1-tts-plus-myvoice-xxxx\"}]。persona 填 AstrBot 里的人格名称；per_language 开启后可另填 zh_model/zh_voice、en_model/en_voice、ja_model/ja_voice，某语言留空则用该规则的默认模型与音色。同一人格只能有一条规则，模型与音色必须成对填写；也可以直接用 /语音设置 音色配置 设置 人格 模型 音色 修改。"
+      },
+      "default_per_language": {
+        "description": "默认音色按语言区分",
         "type": "bool",
         "default": false,
-        "hint": "按最终朗读语言选择模型与音色，共用当前 API Key 和业务空间。语言优先级：翻译目标（聊天明确指定时采用聊天目标）、单次语言、默认朗读语言；均为 auto 时按文本判断中英日。未配置或无法判断时使用默认配对。"
+        "hint": "前面的人格规则都没有命中时使用下方默认模型与音色；开启后可按最终朗读语言分别使用汉语、英语、日语配对，未配置的语言使用默认配对。"
       },
-      "zh_model": {
-        "description": "汉语模型",
+      "default_model": {
+        "description": "默认模型",
+        "type": "string",
+        "default": "qwen-audio-3.1-tts-plus",
+        "hint": "未命中人格规则时使用的模型；自由输入模型 ID，音色需与模型匹配。"
+      },
+      "default_voice": {
+        "description": "默认音色 ID",
         "type": "string",
         "default": "",
-        "hint": "与汉语音色 ID 成对填写；两项留空使用默认模型和音色。"
+        "hint": "未命中人格规则时使用的音色；可填系统音色或自己账号下的复刻音色 ID。也可用 /语音设置 音色 音色名称 直接选择已保存音色。"
       },
-      "zh_voice": {
-        "description": "汉语音色 ID",
+      "default_zh_model": {
+        "description": "默认汉语模型",
         "type": "string",
         "default": "",
-        "hint": "必须与汉语模型匹配，并属于当前业务空间。"
+        "hint": "默认音色按语言区分时使用；与默认汉语音色成对填写，两项留空则使用默认模型与音色。"
       },
-      "en_model": {
-        "description": "英语模型",
+      "default_zh_voice": {
+        "description": "默认汉语音色 ID",
         "type": "string",
         "default": "",
-        "hint": "与英语音色 ID 成对填写；两项留空使用默认模型和音色。"
+        "hint": "必须与默认汉语模型匹配，并属于当前业务空间。"
       },
-      "en_voice": {
-        "description": "英语音色 ID",
+      "default_en_model": {
+        "description": "默认英语模型",
         "type": "string",
         "default": "",
-        "hint": "必须与英语模型匹配，并属于当前业务空间。"
+        "hint": "默认音色按语言区分时使用；与默认英语音色成对填写，两项留空则使用默认模型与音色。"
       },
-      "ja_model": {
-        "description": "日语模型",
+      "default_en_voice": {
+        "description": "默认英语音色 ID",
         "type": "string",
         "default": "",
-        "hint": "与日语音色 ID 成对填写；两项留空使用默认模型和音色。"
+        "hint": "必须与默认英语模型匹配，并属于当前业务空间。"
       },
-      "ja_voice": {
-        "description": "日语音色 ID",
+      "default_ja_model": {
+        "description": "默认日语模型",
         "type": "string",
         "default": "",
-        "hint": "必须与日语模型匹配，并属于当前业务空间。 纯汉字日语请明确指定 ja；自动判断遇到假名选日语，其次汉字选汉语，纯英文字母选英语。单句混合语言使用一个配对，显式分段时逐段选择。"
+        "hint": "默认音色按语言区分时使用；与默认日语音色成对填写，两项留空则使用默认模型与音色。"
+      },
+      "default_ja_voice": {
+        "description": "默认日语音色 ID",
+        "type": "string",
+        "default": "",
+        "hint": "必须与默认日语模型匹配，并属于当前业务空间。"
       }
     }
   },

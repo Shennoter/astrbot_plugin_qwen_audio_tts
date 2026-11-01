@@ -12,7 +12,7 @@ from pathlib import Path
 from astrbot.api import logger
 
 from .delivery import parse_plan
-from .language_models import speech_connection
+from .voices import default_pair, speech_connection
 from .enrollment import MAX_AUDIO, MAX_MULTIPART, EnrollmentManager, validate_wav
 from .settings import public_settings, revision, snapshot, validate_draft, save_profile
 from .tts_client import TTSError
@@ -37,6 +37,9 @@ class PanelMixin:
         cfg = snapshot(self.config)
         if not cfg["connection"]["api_key"] or not cfg["connection"]["workspace"]:
             raise TTSError("请先保存 API Key 和业务空间完整域名。")
+        # Enrollment logs the model, so expose the resolved default pair here.
+        model, voice = default_pair(cfg)
+        cfg["connection"].update(model=model, voice=voice)
         return cfg
 
     async def cloning_upload(self):
@@ -180,6 +183,7 @@ class PanelMixin:
             return web.error_response("请先登录 AstrBot 管理面板。", status_code=401)
         public = public_settings(self.config)
         cfg = public["config"]
+        model, voice = default_pair(cfg)
         return web.json_response(
             {
                 **public,
@@ -192,12 +196,10 @@ class PanelMixin:
                 "text": cfg["preview"]["text"],
                 "language": cfg["preview"]["language"],
                 "max_chars": cfg["reply"]["max_chars"],
-                "model": cfg["connection"]["model"],
-                "voice": cfg["connection"]["voice"],
+                "model": model,
+                "voice": voice,
                 "configured": bool(
-                    public["api_key_set"]
-                    and cfg["connection"]["workspace"]
-                    and cfg["connection"]["voice"]
+                    public["api_key_set"] and cfg["connection"]["workspace"] and voice
                 ),
                 "audio": cfg["audio"],
             }
@@ -290,7 +292,7 @@ class PanelMixin:
                     body.get("delivery_plan"), text.strip(), cfg["delivery"]
                 )
                 models = list(dict.fromkeys(
-                    speech_connection(cfg, item["text"], code)[1]["model"]
+                    speech_connection(cfg, item["text"], code)[1].get("model", "")
                     for item in (plan or [{"text": text.strip()}])
                 ))
                 path = await self._speak(

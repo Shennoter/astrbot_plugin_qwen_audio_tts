@@ -9,7 +9,7 @@ import struct
 import wave
 
 from .pronunciation import compose_settings, estimated_text
-from .language_models import speech_connection
+from .voices import speech_connection
 from .tts_client import TTSError, build_payload, number
 
 MAX_PCM = 64 * 1024 * 1024
@@ -153,7 +153,7 @@ def join_wav(parts):
 
 
 async def synthesize_segments(
-    plugin, text, language, hot_fix, instruction, guide, segments, config
+    plugin, text, language, hot_fix, instruction, guide, segments, config, persona=None
 ):
     """Validate the whole plan before billing, then render and join sequentially."""
     candidates = []
@@ -168,7 +168,7 @@ async def synthesize_segments(
         local_guide = "\n".join(
             part for part in (guide, segment["instruction"]) if part
         )
-        code, connection = speech_connection(cfg, segment["text"], language)
+        code, connection = speech_connection(cfg, segment["text"], language, persona)
         audio = compose_settings(
             cfg["audio"], cfg["pronunciation"], code, hot_fix, instruction
         )
@@ -196,6 +196,7 @@ async def synthesize_segments(
                 instruction=instruction,
                 config_snapshot=cfg,
                 delivery_instruction=local_guide,
+                persona=persona,
             )
             try:
                 parts.append((path.read_bytes(), segment.get("pause_ms", 0)))
