@@ -365,7 +365,11 @@ function Field({
   const meta = schema[group].items[name];
   const path = `${group}.${name}`;
   const numeric = ["int", "float"].includes(meta.type);
+  // `bounds` only validates; `ranges` is the curated set that also draws a
+  // slider. Everything else stays a plain input, so the range check cannot
+  // change how a field looks.
   const limit = rangeFor(group, name);
+  const slider = !meta.options && ranges[name] ? ranges[name] : null;
   const invalid =
     numeric &&
     (value === "" ||
@@ -466,21 +470,48 @@ function Field({
   );
   return (
     <Box sx={{ minWidth: 0 }}>
-      {limit ? (
-        <Stack spacing={1.5}>
-          <Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
+      {slider ? (
+        <Box>
+          <Typography variant="body2" sx={{ mb: 0.5 }}>
+            {meta.description}
+          </Typography>
+          <Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
             <Slider
               aria-label={meta.description}
-              min={limit[0]}
-              max={limit[1]}
-              step={limit[2]}
-              value={Number.isFinite(Number(value)) ? Number(value) : limit[0]}
+              min={slider[0]}
+              max={slider[1]}
+              step={slider[2]}
+              value={Number.isFinite(Number(value)) ? Number(value) : slider[0]}
               onChange={(_, next) => onChange(group, name, next)}
               sx={{ flex: 1, mx: 1 }}
             />
-            <Box sx={{ width: 100, flexShrink: 0 }}>{field}</Box>
+            <TextField
+              size="small"
+              type="number"
+              value={value ?? ""}
+              onChange={setValue}
+              error={!!invalid}
+              sx={{ width: 96, flexShrink: 0 }}
+              slotProps={{
+                htmlInput: {
+                  ...input,
+                  step: slider[2] ?? 1,
+                  min: slider[0],
+                  max: slider[1],
+                },
+              }}
+            />
           </Stack>
-        </Stack>
+          {(invalid || hint) && (
+            <Typography
+              variant="caption"
+              color={invalid ? "error" : "text.secondary"}
+              sx={{ display: "block", mt: 0.5 }}
+            >
+              {invalid ? "请检查数值和允许范围。" : hint}
+            </Typography>
+          )}
+        </Box>
       ) : (
         field
       )}
@@ -1229,7 +1260,12 @@ function App() {
         <Box
           sx={{
             display: "grid",
-            gridTemplateColumns: { xs: "1fr", sm: "repeat(2,minmax(0,1fr))" },
+            // A card with one or two fields reads better as a single column
+            // instead of a half-empty two-column grid.
+            gridTemplateColumns:
+              (names || Object.keys(data.schema[group].items)).length <= 2
+                ? "1fr"
+                : { xs: "1fr", sm: "repeat(2,minmax(0,1fr))" },
             gap: 3,
           }}
         >
