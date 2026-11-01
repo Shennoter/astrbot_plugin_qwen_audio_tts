@@ -930,12 +930,14 @@ function App() {
           <Typography sx={{ fontWeight: 700, fontSize: 16 }}>
             阿里云TTS助手
           </Typography>
-          <Typography sx={{ fontSize: 9, letterSpacing: 2, color: "#9eafcc" }}>
+          <Typography
+            sx={{ fontSize: 9, letterSpacing: 2, color: "text.disabled" }}
+          >
             VOICE WORKSPACE
           </Typography>
         </Box>
       </Stack>
-      <Typography variant="overline" sx={{ color: "#919eab", ml: 1 }}>
+      <Typography variant="overline" sx={{ color: "text.secondary", ml: 1 }}>
         工作台
       </Typography>
       <List dense disablePadding>
@@ -945,7 +947,7 @@ function App() {
               <Typography
                 component="div"
                 variant="overline"
-                sx={{ color: "#919eab", mt: 3, ml: 1 }}
+                sx={{ color: "text.secondary", mt: 3, ml: 1 }}
               >
                 插件配置
               </Typography>
@@ -958,9 +960,21 @@ function App() {
                 borderRadius: 2,
                 mb: 0.5,
                 py: 1.15,
-                color: "#637381",
-                "&.Mui-selected": { bgcolor: "#fce4ec", color: "#E91E63" },
-                "&.Mui-selected:hover": { bgcolor: "#f8bbd0" },
+                color: "text.secondary",
+                "&:hover": { bgcolor: "action.hover" },
+                "&.Mui-selected": {
+                  bgcolor: (theme) =>
+                    theme.palette.mode === "dark"
+                      ? "rgba(233,30,99,0.24)"
+                      : "#fce4ec",
+                  color: "primary.main",
+                },
+                "&.Mui-selected:hover": {
+                  bgcolor: (theme) =>
+                    theme.palette.mode === "dark"
+                      ? "rgba(233,30,99,0.34)"
+                      : "#f8bbd0",
+                },
               }}
             >
               <ListItemIcon sx={{ color: "inherit", minWidth: 34 }}>
@@ -979,7 +993,7 @@ function App() {
           size="small"
           label="v1.2.0"
           variant="outlined"
-          sx={{ color: "#a8b9d3", borderColor: "#41516c" }}
+          sx={{ color: "text.secondary", borderColor: "divider" }}
         />
       </Box>
     </Box>
@@ -997,9 +1011,10 @@ function App() {
             paper: {
               sx: {
                 width: drawerWidth,
-                bgcolor: "#fff",
-                color: "#212b36",
-                borderRight: "1px solid #f0f1f3",
+                bgcolor: "background.paper",
+                color: "text.primary",
+                borderRight: 1,
+                borderColor: "divider",
               },
             },
           }}
