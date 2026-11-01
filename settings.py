@@ -105,13 +105,46 @@ def _legacy_voice_seed(config):
     return seed if configured else None
 
 
+def _profile_voice_seed(config):
+    """Recover a pre-1.2 voice from the saved active profile.
+
+    AstrBot rebuilds a plugin config from the current schema before the plugin
+    starts, so an upgraded installation no longer has the legacy top-level
+    fields. The profile archive is stored as one JSON string and keeps them.
+    """
+    profiles = config.get("profiles", {})
+    if not isinstance(profiles, dict):
+        return None
+    try:
+        entries = json.loads(profiles.get("entries_json", "[]") or "[]")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(entries, list) or not entries:
+        return None
+    active = profiles.get("active_id", "default")
+    entry = next(
+        (item for item in entries if isinstance(item, dict) and item.get("id") == active),
+        None,
+    )
+    if entry is None:
+        entry = next((item for item in entries if isinstance(item, dict)), None)
+    if entry is None or not isinstance(entry.get("config"), dict):
+        return None
+    return _legacy_voice_seed(entry["config"])
+
+
 def _voices_untouched(voices):
-    """Whether the voice rules group still holds nothing but schema defaults."""
+    """Whether a voice options mapping still holds nothing but defaults."""
+    if not isinstance(voices, dict):
+        return True
     return (
-        voices["rules_json"].strip() in ("", "[]")
-        and not voices["default_per_language"]
-        and not voices["default_voice"]
-        and not any(voices[f"default_{code}_model"] for code in LANGUAGE_CODES)
+        str(voices.get("rules_json", "[]") or "[]").strip() in ("", "[]")
+        and not voices.get("default_per_language", False)
+        and not str(voices.get("default_voice", "") or "").strip()
+        and not any(
+            str(voices.get(f"default_{code}_model", "") or "").strip()
+            for code in LANGUAGE_CODES
+        )
     )
 
 
@@ -125,7 +158,7 @@ def snapshot(config):
         for group, meta in SCHEMA.items()
     }
     if _voices_untouched(result["voices"]):
-        seed = _legacy_voice_seed(config)
+        seed = _legacy_voice_seed(config) or _profile_voice_seed(config)
         if seed:
             result["voices"].update(seed)
     # Migrate each old profile independently; never overwrite a new language dictionary.
@@ -152,9 +185,14 @@ def migrate_voices(config):
     """
     legacy = config.get("language_models")
     connection = config.get("connection", {})
-    stale = legacy is not None or (
-        isinstance(connection, dict)
-        and any(key in connection for key in ("model", "voice"))
+    seed = _legacy_voice_seed(config) or _profile_voice_seed(config)
+    stale = (
+        legacy is not None
+        or (
+            isinstance(connection, dict)
+            and any(key in connection for key in ("model", "voice"))
+        )
+        or (_voices_untouched(config.get("voices")) and bool(seed))
     )
     if not stale:
         return False

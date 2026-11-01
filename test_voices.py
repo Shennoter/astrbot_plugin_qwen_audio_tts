@@ -246,6 +246,31 @@ class MigrationTests(unittest.TestCase):
         # The top-level legacy fields are the source of the new default rule.
         self.assertEqual(config["voices"]["default_voice"], "legacy-voice")
 
+    def test_pruned_config_recovers_the_voice_from_the_active_profile(self):
+        config = self.production_like_config()
+        # AstrBot rebuilds the plugin config from the schema before the plugin
+        # starts, so an upgrade arrives without the legacy top-level fields.
+        del config["language_models"]
+        del config["connection"]["model"]
+        del config["connection"]["voice"]
+        seeded = settings.snapshot(config)["voices"]
+        self.assertEqual(seeded["default_voice"], "profile-voice")
+        self.assertTrue(seeded["default_per_language"])
+        self.assertEqual(seeded["default_zh_model"], "profile-zh-model")
+        self.assertTrue(settings.migrate_voices(config))
+        self.assertEqual(config["voices"]["default_voice"], "profile-voice")
+        self.assertNotIn("model", config["connection"])
+        stored = json.loads(config["profiles"]["entries_json"])[0]["config"]
+        self.assertNotIn("language_models", stored)
+        self.assertEqual(stored["voices"]["default_voice"], "profile-voice")
+        self.assertFalse(settings.migrate_voices(config))
+
+    def test_pruned_config_without_profiles_is_left_alone(self):
+        config = h.defaults()
+        config["profiles"] = {"active_id": "default", "entries_json": "[]"}
+        self.assertFalse(settings.migrate_voices(config))
+        self.assertEqual(config["voices"]["default_voice"], "")
+
 
 if __name__ == "__main__":
     unittest.main()
