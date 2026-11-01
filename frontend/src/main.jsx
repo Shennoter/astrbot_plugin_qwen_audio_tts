@@ -135,6 +135,26 @@ const ranges = {
   probability: [0, 100, 1],
   max_prompt_audio_length: [3, 30, 0.5],
 };
+// Mirrors settings.py RANGES so the form stops sending values the API rejects.
+const bounds = {
+  "connection.timeout": [5, 300],
+  "connection.max_concurrent": [1, 8],
+  "connection.keep_hours": [1, 720],
+  "reply.probability": [0, 100],
+  "reply.max_chars": [1, 10000],
+  "reply.cooldown_seconds": [0, 3600],
+  "command.cooldown_seconds": [0, 3600],
+  "audio.sample_rate": [8000, 48000],
+  "audio.volume": [0, 100],
+  "audio.rate": [0.5, 2],
+  "audio.pitch": [0.5, 2],
+  "audio.bit_rate": [6, 510],
+  "audio.seed": [-1, 65535],
+  "delivery.max_segments": [1, 12],
+  "delivery.max_total_pause_ms": [0, 30000],
+  "cloning.max_prompt_audio_length": [3, 30],
+};
+const rangeFor = (group, name) => bounds[`${group}.${name}`] || ranges[name];
 const optionLabel = {
   auto: "跟随默认 / 自动",
   zh: "汉语",
@@ -237,6 +257,84 @@ const voiceModelMatches = (voice, model) => {
   return id === prefix || id.startsWith(`${prefix}-`);
 };
 const uniqueStrings = (values) => Array.from(new Set(values.filter(Boolean)));
+// The service reports the model that created each replica, so a voice pick can
+// carry its model along; hand-typed ids fall back to the longest known model
+// prefix they match.
+const modelForVoice = (voice, pairs) => {
+  const id = (voice || "").trim();
+  if (!id) return "";
+  const known = new Map();
+  (pairs || []).forEach(([model, candidate]) => {
+    const key = (candidate || "").trim();
+    const owner = (model || "").trim();
+    if (key && owner && !known.has(key)) known.set(key, owner);
+  });
+  if (known.has(id)) return known.get(id);
+  return (
+    uniqueStrings(Array.from(known.values()))
+      .filter((model) => voiceModelMatches(id, model))
+      .sort((left, right) => right.length - left.length)[0] || ""
+  );
+};
+// A rule stores both members of a pair; the server rejects half pairs, so the
+// editor reports the same problems before the save button is pressed.
+const voiceRuleIssues = (rules) => {
+  if (!Array.isArray(rules)) return [];
+  const seen = new Map();
+  return rules.map((rule, index) => {
+    const label = `第 ${index + 1} 条规则`;
+    const persona = (rule?.persona || "").trim();
+    if (!persona) return `${label}缺少人格。`;
+    if (persona.length > 64) return `${label}的人格名称超过 64 字。`;
+    if (seen.has(persona))
+      return `人格 ${persona} 与${seen.get(persona)}重复，同一人格只能有一条规则。`;
+    seen.set(persona, label);
+    const pairs = [
+      ["", "模型与音色"],
+      ...(rule.per_language
+        ? voiceLanguages.map(([code, name]) => [
+            `${code}_`,
+            `${name}模型与音色`,
+          ])
+        : []),
+    ];
+    for (const [prefix, name] of pairs) {
+      const model = (rule[`${prefix}model`] || "").trim();
+      const voice = (rule[`${prefix}voice`] || "").trim();
+      if (!!model !== !!voice)
+        return `${label}（${persona}）的${name}必须一起填写，或一起留空。`;
+    }
+    const complete = pairs.some(
+      ([prefix]) =>
+        (rule[`${prefix}model`] || "").trim() &&
+        (rule[`${prefix}voice`] || "").trim(),
+    );
+    if (!complete)
+      return `${label}（${persona}）至少需要一组完整的模型与音色。`;
+    return "";
+  });
+};
+const voiceRuleIssue = (rules) => voiceRuleIssues(rules).find(Boolean) || "";
+// The default pair may keep its model without a voice (fresh install), every
+// other default just follows the same both-or-neither rule as a persona rule.
+const defaultVoiceIssue = (voices) => {
+  const checks = [
+    ...voiceLanguages.map(([code, name]) => [
+      `default_${code}_`,
+      `默认${name}音色`,
+      false,
+    ]),
+    ["default_", "默认音色", true],
+  ];
+  for (const [prefix, label, allowModelOnly] of checks) {
+    const model = (voices?.[`${prefix}model`] || "").trim();
+    const voice = (voices?.[`${prefix}voice`] || "").trim();
+    if (!!model === !!voice) continue;
+    if (allowModelOnly && model) continue;
+    return `${label}的模型与音色 ID 必须一起填写，或一起留空。`;
+  }
+  return "";
+};
 // Voice states from the API: DEPLOYING (in review) / OK / UNDEPLOYED (rejected).
 const voiceStatusNote = (status) => {
   const value = (status || "").trim().toUpperCase();
@@ -267,7 +365,7 @@ function Field({
   const meta = schema[group].items[name];
   const path = `${group}.${name}`;
   const numeric = ["int", "float"].includes(meta.type);
-  const limit = ranges[name];
+  const limit = rangeFor(group, name);
   const invalid =
     numeric &&
     (value === "" ||
@@ -460,6 +558,10 @@ function App() {
   const [jobs, setJobs] = useState([]);
   const [remoteVoices, setRemoteVoices] = useState([]);
   const [voiceBusy, setVoiceBusy] = useState(false);
+  // Preview-only voice override: empty means "follow the draft", so the shared
+  // per-language and persona rules keep working for the trial listen.
+  const [previewVoice, setPreviewVoice] = useState("");
+  const [previewModel, setPreviewModel] = useState("");
   const [jobError, setJobError] = useState("");
   const [querying, setQuerying] = useState(null);
   const audioRef = useRef(null);
@@ -576,14 +678,23 @@ function App() {
     for (const [group, metadata] of Object.entries(data.schema))
       for (const [key, field] of Object.entries(metadata.items)) {
         const value = draft[group][key];
+        if (!["int", "float"].includes(field.type)) continue;
+        const limit = rangeFor(group, key);
         if (
-          ["int", "float"].includes(field.type) &&
-          (value === "" ||
-            !Number.isFinite(Number(value)) ||
-            (field.type === "int" && !Number.isInteger(Number(value))))
+          value === "" ||
+          !Number.isFinite(Number(value)) ||
+          (field.type === "int" && !Number.isInteger(Number(value)))
         )
           throw new Error(`请检查“${field.description}”的数值。`);
+        if (limit && (Number(value) < limit[0] || Number(value) > limit[1]))
+          throw new Error(
+            `“${field.description}”需在 ${limit[0]}～${limit[1]} 之间。`,
+          );
       }
+    const pairIssue = defaultVoiceIssue(draft.voices);
+    if (pairIssue) throw new Error(pairIssue);
+    const ruleIssue = voiceRuleIssue(parseVoiceRules(draft.voices.rules_json));
+    if (ruleIssue) throw new Error(ruleIssue);
     return clone(draft);
   }
   async function save() {
@@ -621,6 +732,26 @@ function App() {
     let config;
     try {
       config = collect();
+      if (previewVoice.trim()) {
+        // The trial listen may use any replica: pin it to the picked voice and
+        // the model that owns it, ignoring the per-language defaults for now.
+        const voice = previewVoice.trim();
+        const model =
+          previewModel ||
+          modelForVoice(voice, voiceModelPairs) ||
+          config.voices.default_model ||
+          "";
+        if (!model)
+          throw new Error(
+            "所选音色没有对应模型：请先在“音色配置”填写默认模型，或从“获取音色列表”里选择。",
+          );
+        config.voices = {
+          ...config.voices,
+          default_per_language: false,
+          default_model: model,
+          default_voice: voice,
+        };
+      }
     } catch (error) {
       notify(error.message, "error");
       return;
@@ -797,6 +928,26 @@ function App() {
       ...voiceLanguages.map(([code]) => rule[`${code}_voice`]),
     ]),
   ]);
+  // Every pair the page already knows about, so picking a voice can fill in the
+  // model that created it without asking the user to retype a long id.
+  const voiceModelPairs = [
+    ...remoteVoices.map((entry) => [entry.target_model, entry.voice_id]),
+    ...libraryVoices.map((entry) => [entry.model, entry.voice]),
+    [voiceConfig.default_model, voiceConfig.default_voice],
+    ...voiceLanguages.map(([code]) => [
+      voiceConfig[`default_${code}_model`],
+      voiceConfig[`default_${code}_voice`],
+    ]),
+    ...(voiceRules || []).flatMap((rule) => [
+      [rule.model, rule.voice],
+      ...voiceLanguages.map(([code]) => [
+        rule[`${code}_model`],
+        rule[`${code}_voice`],
+      ]),
+    ]),
+  ];
+  const modelFor = (voice) => modelForVoice(voice, voiceModelPairs);
+  const ruleIssues = voiceRuleIssues(voiceRules);
   const voiceSuggestions = (model) => {
     const chosen = [];
     const seen = new Set();
@@ -911,7 +1062,16 @@ function App() {
   const addVoiceRule = () => {
     const used = new Set((voiceRules || []).map((rule) => rule.persona));
     const next = personaOptions.find((name) => !used.has(name));
-    if (next) writeVoiceRules([...(voiceRules || []), emptyVoiceRule(next)]);
+    if (!next) return;
+    // Seed the row with the default pair so a new rule is valid right away.
+    writeVoiceRules([
+      ...(voiceRules || []),
+      {
+        ...emptyVoiceRule(next),
+        model: defaultPair[0] || "",
+        voice: defaultPair[1] || "",
+      },
+    ]);
   };
   const voiceRuleField = (rule, index, prefix, label) => {
     const modelKey = `${prefix}model`;
@@ -937,7 +1097,13 @@ function App() {
           fieldKey: `rule-${index}-${voiceKey}`,
           label: `${label}音色 ID`,
           value: rule[voiceKey] || "",
-          onValue: (next) => updateVoiceRule(index, { [voiceKey]: next }),
+          onValue: (next) => {
+            updateVoiceRule(index, { [voiceKey]: next });
+            // Keep the pair consistent: the replica's model owns the model field.
+            const owner = modelFor(next);
+            if (owner && owner !== (rule[modelKey] || ""))
+              updateVoiceRule(index, { [modelKey]: owner });
+          },
           options: voiceSuggestions(model).options,
           helper: voiceHint(model),
           placeholder: "qwen-audio-3.1-tts-plus-myvoice-…",
@@ -991,15 +1157,23 @@ function App() {
       : data?.profiles.find((p) => p.id === sourceProfileId)?.api_key_set;
   const voiceSchemaMeta = (name) => data.schema.voices.items[name] || {};
   const voiceField = (name) => {
+    const modelKey = name.replace(/voice$/, "model");
     const model =
-      voiceConfig[name.replace(/voice$/, "model")] ||
+      voiceConfig[modelKey] ||
       (name === "default_voice" ? "" : voiceConfig.default_model) ||
       "";
     return comboField({
       fieldKey: `voices.${name}`,
       label: voiceSchemaMeta(name).description,
       value: voiceConfig[name],
-      onValue: (next) => change("voices", name, next),
+      onValue: (next) => {
+        change("voices", name, next);
+        // A replica only synthesizes with the model that created it, so picking
+        // one also fills the paired model field.
+        const owner = modelFor(next);
+        if (owner && owner !== voiceConfig[modelKey])
+          change("voices", modelKey, owner);
+      },
       options: voiceSuggestions(model).options,
       helper: voiceHint(model),
       placeholder: "qwen-audio-3.1-tts-plus-myvoice-…",
@@ -1403,34 +1577,67 @@ function App() {
                             />
                           )}
                           <Stack
-                            direction={{ xs: "column", sm: "row" }}
+                            direction={{ xs: "column", md: "row" }}
                             spacing={2}
                             sx={{
                               justifyContent: "space-between",
-                              alignItems: { sm: "center" },
+                              alignItems: { md: "flex-start" },
                             }}
                           >
-                            <TextField
-                              select
-                              size="small"
-                              id="language"
-                              label="朗读语言"
-                              value={draft.preview.language}
-                              onChange={(event) =>
-                                change(
-                                  "preview",
-                                  "language",
-                                  event.target.value,
-                                )
-                              }
-                              sx={{ minWidth: 180 }}
+                            <Stack
+                              direction={{ xs: "column", sm: "row" }}
+                              spacing={2}
+                              sx={{ minWidth: 0, flex: 1, width: "100%" }}
                             >
-                              {["auto", "zh", "en", "ja"].map((code) => (
-                                <MenuItem key={code} value={code}>
-                                  {optionLabel[code]}
-                                </MenuItem>
-                              ))}
-                            </TextField>
+                              <TextField
+                                select
+                                size="small"
+                                id="language"
+                                label="朗读语言"
+                                value={draft.preview.language}
+                                onChange={(event) =>
+                                  change(
+                                    "preview",
+                                    "language",
+                                    event.target.value,
+                                  )
+                                }
+                                sx={{ minWidth: 170 }}
+                              >
+                                {["auto", "zh", "en", "ja"].map((code) => (
+                                  <MenuItem key={code} value={code}>
+                                    {optionLabel[code]}
+                                  </MenuItem>
+                                ))}
+                              </TextField>
+                              <Box sx={{ minWidth: 0, flex: 1, width: "100%" }}>
+                                {comboField({
+                                  fieldKey: "preview.voice",
+                                  label: "试听音色",
+                                  value: previewVoice,
+                                  onValue: (next) => {
+                                    const picked = (next || "").trim();
+                                    setPreviewVoice(picked);
+                                    setPreviewModel(
+                                      picked ? modelFor(picked) : "",
+                                    );
+                                  },
+                                  options: voiceSuggestions("").options,
+                                  helper: previewVoice.trim()
+                                    ? `模型：${
+                                        previewModel ||
+                                        modelFor(previewVoice.trim()) ||
+                                        "未匹配到，将沿用草稿模型"
+                                      }（选择音色时自动填入）· 仅用于本次试听`
+                                    : `跟随草稿默认音色${
+                                        defaultPair[0]
+                                          ? `（${defaultPair[0]}）`
+                                          : ""
+                                      }；选择后只影响本次试听。`,
+                                  placeholder: "留空则跟随草稿默认音色",
+                                })}
+                              </Box>
+                            </Stack>
                             <Button
                               id="generate"
                               variant="contained"
@@ -1669,6 +1876,11 @@ function App() {
                                 </Box>,
                               ])}
                           </Box>
+                          {defaultVoiceIssue(draft.voices) && (
+                            <Alert severity="error" sx={{ py: 0 }}>
+                              {defaultVoiceIssue(draft.voices)}
+                            </Alert>
+                          )}
                         </Stack>
                       </CardContent>
                     </Card>
@@ -1694,8 +1906,9 @@ function App() {
                         </Stack>
                         <Typography variant="caption" color="text.secondary">
                           AstrBot
-                          每次朗读时读取当前会话人格；同一人格只能有一条规则，模型与音色必须成对填写。模型手填，音色可下拉（先点“获取音色列表”）或手填，并按“模型 ID 前缀”筛选。人格在
-                          AstrBot 人格管理中创建，会话里用 /persona 切换。
+                          每次朗读时读取当前会话人格；同一人格只能有一条规则，模型与音色必须成对填写。模型手填，音色可下拉（先点“获取音色列表”）或手填，并按“模型
+                          ID 前缀”筛选。人格在 AstrBot 人格管理中创建，会话里用
+                          /persona 切换。
                         </Typography>
                         {!voiceRules && (
                           <Alert severity="error" sx={{ mt: 2 }}>
@@ -1731,6 +1944,9 @@ function App() {
                                       label="人格"
                                       value={rule.persona || ""}
                                       disabled={busy}
+                                      error={
+                                        !rule.persona || !!ruleIssues[index]
+                                      }
                                       onChange={(event) =>
                                         updateVoiceRule(index, {
                                           persona: event.target.value,
@@ -1738,11 +1954,21 @@ function App() {
                                       }
                                       sx={{ minWidth: 200, flex: 1 }}
                                     >
-                                      {personaOptions.map((name) => (
-                                        <MenuItem key={name} value={name}>
-                                          {name}
-                                        </MenuItem>
-                                      ))}
+                                      {personaOptions
+                                        .filter(
+                                          (name) =>
+                                            name === rule.persona ||
+                                            !(voiceRules || []).some(
+                                              (other, position) =>
+                                                position !== index &&
+                                                other.persona === name,
+                                            ),
+                                        )
+                                        .map((name) => (
+                                          <MenuItem key={name} value={name}>
+                                            {name}
+                                          </MenuItem>
+                                        ))}
                                     </TextField>
                                     <FormControlLabel
                                       label="按语言细分"
@@ -1783,6 +2009,11 @@ function App() {
                                         ),
                                       )}
                                   </Stack>
+                                  {ruleIssues[index] && (
+                                    <Alert severity="error" sx={{ py: 0 }}>
+                                      {ruleIssues[index]}
+                                    </Alert>
+                                  )}
                                 </Stack>
                               </Box>
                             ))}
