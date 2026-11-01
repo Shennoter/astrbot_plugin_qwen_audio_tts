@@ -325,8 +325,86 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(client.TTSError):
             client.normalize_audio(b"<html>error</html>", "wav")
 
+    def test_voice_list_reads_pages_and_validates_payload(self):
+        page = Mock()
+        page.open.return_value.__enter__ = Mock(
+            return_value=io.BytesIO(
+                json.dumps(
+                    {
+                        "output": {
+                            "voice_list": [
+                                {
+                                    "voice_id": "qwen-audio-3.1-tts-flash-bailian-abc",
+                                    "target_model": "qwen-audio-3.1-tts-flash",
+                                    "status": "OK",
+                                },
+                                {"voice_id": ""},
+                                "ignored",
+                            ],
+                            "total_count": 1,
+                        }
+                    }
+                ).encode()
+            )
+        )
+        page.open.return_value.__exit__ = Mock(return_value=False)
+        with patch.object(client, "build_opener", return_value=page):
+            voices = client.list_voices(
+                client.workspace_base("ws-example"), "private-key"
+            )
+        self.assertEqual(
+            voices,
+            [
+                {
+                    "voice_id": "qwen-audio-3.1-tts-flash-bailian-abc",
+                    "target_model": "qwen-audio-3.1-tts-flash",
+                    "status": "OK",
+                }
+            ],
+        )
+        request = page.open.call_args.args[0]
+        self.assertEqual(
+            request.full_url,
+            "https://ws-example.cn-beijing.maas.aliyuncs.com/api/v1"
+            "/services/audio/tts/customization",
+        )
+        body = json.loads(request.data)
+        self.assertEqual(body["model"], "voice-enrollment")
+        self.assertEqual(body["input"]["action"], "list_voice")
+        self.assertEqual(request.get_header("Authorization"), "Bearer private-key")
 
-class PluginTests(unittest.IsolatedAsyncioTestCase):
+    def test_voice_list_requires_key_and_surfaces_failures(self):
+        with self.assertRaises(client.TTSError):
+            client.list_voices(client.workspace_base("ws-example"), "")
+        service = Mock()
+        service.open.side_effect = HTTPError(
+            "https://example",
+            403,
+            "denied",
+            {},
+            io.BytesIO(b'{"code":"AccessDenied","message":"private-key denied"}'),
+        )
+        with (
+            patch.object(client, "build_opener", return_value=service),
+            self.assertRaises(client.TTSError) as caught,
+        ):
+            client.list_voices(client.workspace_base("ws-example"), "private-key")
+        self.assertNotIn("private-key", str(caught.exception))
+        broken = Mock()
+        broken.open.return_value.__enter__ = Mock(
+            return_value=io.BytesIO(b'{"output":{}}')
+        )
+        broken.open.return_value.__exit__ = Mock(return_value=False)
+        with (
+            patch.object(client, "build_opener", return_value=broken),
+            self.assertRaises(client.TTSError),
+        ):
+            client.list_voices(client.workspace_base("ws-example"), "private-key")
+
+
+class PluginTestBase(unittest.IsolatedAsyncioTestCase):
+    """Fixtures shared by every test case that drives the real plugin."""
+
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -343,7 +421,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.config = defaults()
         self.config["connection"]["workspace"] = "ws-example"
         self.config["connection"]["api_key"] = "test-key"
-        self.config["connection"]["voice"] = "qwen-audio-3.1-tts-plus-test-voice"
+        self.config["voices"]["default_voice"] = "qwen-audio-3.1-tts-plus-test-voice"
         self.config["reply"]["probability"] = 100
         self.context = types.SimpleNamespace(
             get_provider_by_id=Mock(
@@ -377,6 +455,10 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.context.llm_generate = AsyncMock(side_effect=[
             types.SimpleNamespace(completion_text=text) for text in (outputs or ["Hello world"])
         ])
+
+
+class PluginTests(PluginTestBase):
+    """Chat-side replies, commands, previews and dashboard settings."""
 
     async def test_translation_auto_language_overrides_default_and_preserves_original(self):
         for target, code, translated in [("汉语", "zh", "你好"), ("日语", "ja", "こんにちは"), ("英语", "en", "Hello")]:
@@ -524,11 +606,11 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.context.get_using_tts_provider_async.assert_not_called()
         self.assertEqual(network.call_args.args[1], "test-key")
         self.assertEqual(
-            network.call_args.args[2]["model"], self.config["connection"]["model"]
+            network.call_args.args[2]["model"], self.config["voices"]["default_model"]
         )
         self.assertEqual(
             network.call_args.args[2]["input"]["voice"],
-            self.config["connection"]["voice"],
+            self.config["voices"]["default_voice"],
         )
 
     async def test_shutdown_stops_new_synthesis(self):
@@ -963,9 +1045,13 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("patch_builtin", fields)
 
     async def test_missing_credentials_fail_before_network(self):
-        for key in ("api_key", "voice", "workspace"):
-            saved = self.config["connection"][key]
-            self.config["connection"][key] = ""
+        for group, key in (
+            ("connection", "api_key"),
+            ("connection", "workspace"),
+            ("voices", "default_voice"),
+        ):
+            saved = self.config[group][key]
+            self.config[group][key] = ""
             with (
                 self.subTest(key=key),
                 patch.object(main, "synthesize_http") as network,
@@ -973,7 +1059,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await self.plugin._speak("hello")
             network.assert_not_called()
-            self.config["connection"][key] = saved
+            self.config[group][key] = saved
 
     async def test_preview_uses_current_settings_without_random_or_manual_command(self):
         self.config["reply"]["probability"] = 0
@@ -1088,18 +1174,20 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
     async def test_web_api_registration_and_older_astrbot_fallback(self):
         await self.plugin.initialize()
         routes = self.context.register_web_api.call_args_list
-        self.assertEqual(len(routes), 7)
+        self.assertEqual(len(routes), 8)
         self.assertEqual(
             routes[0].args[0], "/astrbot_plugin_qwen_audio_tts/preview/settings"
         )
         self.assertEqual(routes[1].args[2], ["POST"])
+        registered = [route.args[0] for route in routes]
+        self.assertIn("/astrbot_plugin_qwen_audio_tts/voices/list", registered)
         # Missing public Web API leaves normal voice features usable.
         with patch.dict(
             sys.modules,
             {"astrbot.api": types.ModuleType("astrbot.api"), "astrbot.api.web": None},
         ):
             await self.plugin.initialize()
-        self.assertEqual(self.context.register_web_api.call_count, 7)
+        self.assertEqual(self.context.register_web_api.call_count, 8)
 
 
 if __name__ == "__main__":

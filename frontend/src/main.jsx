@@ -6,6 +6,7 @@ import { ThemeProvider, createTheme } from "@mui/material/styles";
 import {
   Alert,
   AppBar,
+  Autocomplete,
   Avatar,
   Box,
   Button,
@@ -23,6 +24,7 @@ import {
   Drawer,
   FormControlLabel,
   IconButton,
+  InputAdornment,
   List,
   ListItemButton,
   ListItemIcon,
@@ -52,6 +54,10 @@ import SaveIcon from "@mui/icons-material/Save";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import DownloadIcon from "@mui/icons-material/Download";
+import AddIcon from "@mui/icons-material/Add";
+import DeleteIcon from "@mui/icons-material/Delete";
+import ClearIcon from "@mui/icons-material/Clear";
+import PersonIcon from "@mui/icons-material/Person";
 
 const bridge = window.AstrBotPluginView;
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -70,10 +76,16 @@ const pages = [
   },
   {
     id: "connection",
-    title: "服务与音色",
+    title: "语音服务",
     icon: SettingsVoiceIcon,
-    groups: ["connection", "language_models"],
-    description: "独立配置 API Key、完整业务空间域名和音色。",
+    groups: ["connection"],
+    description: "独立配置 API Key、业务空间地址与音频保存。",
+  },
+  {
+    id: "voices",
+    title: "音色配置",
+    icon: PersonIcon,
+    description: "按人格与语言选择模型和音色，默认音色兜底。",
   },
   {
     id: "audio",
@@ -125,12 +137,213 @@ const ranges = {
   probability: [0, 100, 1],
   max_prompt_audio_length: [3, 30, 0.5],
 };
+// Mirrors settings.py RANGES so the form stops sending values the API rejects.
+const bounds = {
+  "connection.timeout": [5, 300],
+  "connection.max_concurrent": [1, 8],
+  "connection.keep_hours": [1, 720],
+  "reply.probability": [0, 100],
+  "reply.max_chars": [1, 10000],
+  "reply.cooldown_seconds": [0, 3600],
+  "command.cooldown_seconds": [0, 3600],
+  "audio.sample_rate": [8000, 48000],
+  "audio.volume": [0, 100],
+  "audio.rate": [0.5, 2],
+  "audio.pitch": [0.5, 2],
+  "audio.bit_rate": [6, 510],
+  "audio.seed": [-1, 65535],
+  "delivery.max_segments": [1, 12],
+  "delivery.max_total_pause_ms": [0, 30000],
+  "cloning.max_prompt_audio_length": [3, 30],
+};
+const rangeFor = (group, name) => bounds[`${group}.${name}`] || ranges[name];
 const optionLabel = {
   auto: "跟随默认 / 自动",
   zh: "汉语",
   en: "英语",
   ja: "日语",
   all: "全部语言",
+};
+const voiceLanguages = [
+  ["zh", "汉语"],
+  ["en", "英语"],
+  ["ja", "日语"],
+];
+const voicePairKeys = ["model", "voice"].concat(
+  voiceLanguages.flatMap(([code]) => [`${code}_model`, `${code}_voice`]),
+);
+const emptyVoiceRule = (persona) => ({
+  persona,
+  per_language: false,
+  ...Object.fromEntries(voicePairKeys.map((key) => [key, ""])),
+});
+const parseVoiceRules = (raw) => {
+  try {
+    const value = JSON.parse(raw || "[]");
+    return Array.isArray(value) ? value : null;
+  } catch (error) {
+    return null;
+  }
+};
+const voicePairFrom = (entry, code, perLanguage) => {
+  if (!entry) return ["", ""];
+  if (perLanguage && ["zh", "en", "ja"].includes(code)) {
+    const model = entry[`${code}_model`] || "";
+    if (model) return [model, entry[`${code}_voice`] || ""];
+  }
+  return [entry.model || "", entry.voice || ""];
+};
+const hasVoicePair = (model, voice) => !!(model && voice);
+const defaultVoicePair = (voices) =>
+  voicePairFrom(
+    {
+      model: voices?.default_model,
+      voice: voices?.default_voice,
+      zh_model: voices?.default_zh_model,
+      zh_voice: voices?.default_zh_voice,
+      en_model: voices?.default_en_model,
+      en_voice: voices?.default_en_voice,
+      ja_model: voices?.default_ja_model,
+      ja_voice: voices?.default_ja_voice,
+    },
+    "auto",
+    false,
+  );
+const voicesReady = (voices) => {
+  if (!voices) return false;
+  if (hasVoicePair(voices.default_model, voices.default_voice)) return true;
+  if (
+    voices.default_per_language &&
+    voiceLanguages.some(([code]) =>
+      hasVoicePair(
+        voices[`default_${code}_model`],
+        voices[`default_${code}_voice`],
+      ),
+    )
+  )
+    return true;
+  const rules = parseVoiceRules(voices.rules_json) || [];
+  return rules.some(
+    (rule) =>
+      hasVoicePair(rule.model, rule.voice) ||
+      (rule.per_language &&
+        voiceLanguages.some(([code]) =>
+          hasVoicePair(rule[`${code}_model`], rule[`${code}_voice`]),
+        )),
+  );
+};
+const savedVoiceEntries = (draft) => {
+  try {
+    const list = JSON.parse(draft?.voice_library?.entries_json || "[]");
+    return Array.isArray(list)
+      ? list.filter(
+          (entry) =>
+            entry && typeof entry.voice === "string" && entry.voice.trim(),
+        )
+      : [];
+  } catch (error) {
+    return [];
+  }
+};
+const savedVoiceNames = (draft) =>
+  savedVoiceEntries(draft)
+    .map((entry) => entry?.name)
+    .filter((name) => typeof name === "string" && name);
+// Replica voice ids are prefixed with the model that created them, so the model
+// itself decides which voices can ever work.
+const voiceModelMatches = (voice, model) => {
+  const id = (voice || "").trim();
+  const prefix = (model || "").trim();
+  if (!id) return false;
+  if (!prefix) return true;
+  return id === prefix || id.startsWith(`${prefix}-`);
+};
+const uniqueStrings = (values) => Array.from(new Set(values.filter(Boolean)));
+// The service reports the model that created each replica, so a voice pick can
+// carry its model along; hand-typed ids fall back to the longest known model
+// prefix they match.
+const modelForVoice = (voice, pairs) => {
+  const id = (voice || "").trim();
+  if (!id) return "";
+  const known = new Map();
+  (pairs || []).forEach(([model, candidate]) => {
+    const key = (candidate || "").trim();
+    const owner = (model || "").trim();
+    if (key && owner && !known.has(key)) known.set(key, owner);
+  });
+  if (known.has(id)) return known.get(id);
+  return (
+    uniqueStrings(Array.from(known.values()))
+      .filter((model) => voiceModelMatches(id, model))
+      .sort((left, right) => right.length - left.length)[0] || ""
+  );
+};
+// A rule stores both members of a pair; the server rejects half pairs, so the
+// editor reports the same problems before the save button is pressed.
+const voiceRuleIssues = (rules) => {
+  if (!Array.isArray(rules)) return [];
+  const seen = new Map();
+  return rules.map((rule, index) => {
+    const label = `第 ${index + 1} 条规则`;
+    const persona = (rule?.persona || "").trim();
+    if (!persona) return `${label}缺少人格。`;
+    if (persona.length > 64) return `${label}的人格名称超过 64 字。`;
+    if (seen.has(persona))
+      return `人格 ${persona} 与${seen.get(persona)}重复，同一人格只能有一条规则。`;
+    seen.set(persona, label);
+    const pairs = [
+      ["", "模型与音色"],
+      ...(rule.per_language
+        ? voiceLanguages.map(([code, name]) => [
+            `${code}_`,
+            `${name}模型与音色`,
+          ])
+        : []),
+    ];
+    for (const [prefix, name] of pairs) {
+      const model = (rule[`${prefix}model`] || "").trim();
+      const voice = (rule[`${prefix}voice`] || "").trim();
+      if (!!model !== !!voice)
+        return `${label}（${persona}）的${name}必须一起填写，或一起留空。`;
+    }
+    const complete = pairs.some(
+      ([prefix]) =>
+        (rule[`${prefix}model`] || "").trim() &&
+        (rule[`${prefix}voice`] || "").trim(),
+    );
+    if (!complete)
+      return `${label}（${persona}）至少需要一组完整的模型与音色。`;
+    return "";
+  });
+};
+const voiceRuleIssue = (rules) => voiceRuleIssues(rules).find(Boolean) || "";
+// The default pair may keep its model without a voice (fresh install), every
+// other default just follows the same both-or-neither rule as a persona rule.
+const defaultVoiceIssue = (voices) => {
+  const checks = [
+    ...voiceLanguages.map(([code, name]) => [
+      `default_${code}_`,
+      `默认${name}音色`,
+      false,
+    ]),
+    ["default_", "默认音色", true],
+  ];
+  for (const [prefix, label, allowModelOnly] of checks) {
+    const model = (voices?.[`${prefix}model`] || "").trim();
+    const voice = (voices?.[`${prefix}voice`] || "").trim();
+    if (!!model === !!voice) continue;
+    if (allowModelOnly && model) continue;
+    return `${label}的模型与音色 ID 必须一起填写，或一起留空。`;
+  }
+  return "";
+};
+// Voice states from the API: DEPLOYING (in review) / OK / UNDEPLOYED (rejected).
+const voiceStatusNote = (status) => {
+  const value = (status || "").trim().toUpperCase();
+  if (!value || value === "OK") return "";
+  if (value === "DEPLOYING") return "审核中";
+  if (value === "UNDEPLOYED") return "不可用";
+  return value;
 };
 const drawerWidth = 240;
 const cardSx = {
@@ -139,6 +352,26 @@ const cardSx = {
   borderColor: "divider",
   boxShadow: "0 2px 16px rgba(145,158,171,0.08)",
 };
+// Model ids are long and easy to mistype; every model input gets the same
+// clear affordance the voice pickers already have.
+const modelClearAdornment = (value, onClear) =>
+  value
+    ? {
+        endAdornment: (
+          <InputAdornment position="end">
+            <IconButton
+              size="small"
+              edge="end"
+              aria-label="清除模型 ID"
+              title="清除模型 ID"
+              onClick={onClear}
+            >
+              <ClearIcon fontSize="small" />
+            </IconButton>
+          </InputAdornment>
+        ),
+      }
+    : undefined;
 
 function Field({
   group,
@@ -154,7 +387,11 @@ function Field({
   const meta = schema[group].items[name];
   const path = `${group}.${name}`;
   const numeric = ["int", "float"].includes(meta.type);
-  const limit = ranges[name];
+  // `bounds` only validates; `ranges` is the curated set that also draws a
+  // slider. Everything else stays a plain input, so the range check cannot
+  // change how a field looks.
+  const limit = rangeFor(group, name);
+  const slider = !meta.options && ranges[name] ? ranges[name] : null;
   const invalid =
     numeric &&
     (value === "" ||
@@ -234,6 +471,11 @@ function Field({
               : undefined
       }
       slotProps={{
+        // Only plain model inputs (never a select) get the clear button.
+        input:
+          /(^|_)model$/.test(name) && !meta.options
+            ? modelClearAdornment(value, () => onChange(group, name, ""))
+            : undefined,
         htmlInput: {
           ...input,
           ...(numeric
@@ -255,21 +497,48 @@ function Field({
   );
   return (
     <Box sx={{ minWidth: 0 }}>
-      {limit ? (
-        <Stack spacing={1.5}>
-          <Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
+      {slider ? (
+        <Box>
+          <Typography variant="body2" sx={{ mb: 0.5 }}>
+            {meta.description}
+          </Typography>
+          <Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
             <Slider
               aria-label={meta.description}
-              min={limit[0]}
-              max={limit[1]}
-              step={limit[2]}
-              value={Number.isFinite(Number(value)) ? Number(value) : limit[0]}
+              min={slider[0]}
+              max={slider[1]}
+              step={slider[2]}
+              value={Number.isFinite(Number(value)) ? Number(value) : slider[0]}
               onChange={(_, next) => onChange(group, name, next)}
               sx={{ flex: 1, mx: 1 }}
             />
-            <Box sx={{ width: 100, flexShrink: 0 }}>{field}</Box>
+            <TextField
+              size="small"
+              type="number"
+              value={value ?? ""}
+              onChange={setValue}
+              error={!!invalid}
+              sx={{ width: 96, flexShrink: 0 }}
+              slotProps={{
+                htmlInput: {
+                  ...input,
+                  step: slider[2] ?? 1,
+                  min: slider[0],
+                  max: slider[1],
+                },
+              }}
+            />
           </Stack>
-        </Stack>
+          {(invalid || hint) && (
+            <Typography
+              variant="caption"
+              color={invalid ? "error" : "text.secondary"}
+              sx={{ display: "block", mt: 0.5 }}
+            >
+              {invalid ? "请检查数值和允许范围。" : hint}
+            </Typography>
+          )}
+        </Box>
       ) : (
         field
       )}
@@ -345,6 +614,12 @@ function App() {
     "先保存 API Key 和业务空间完整域名，再上传参考录音。",
   );
   const [jobs, setJobs] = useState([]);
+  const [remoteVoices, setRemoteVoices] = useState([]);
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  // Preview-only voice override: empty means "follow the draft", so the shared
+  // per-language and persona rules keep working for the trial listen.
+  const [previewVoice, setPreviewVoice] = useState("");
+  const [previewModel, setPreviewModel] = useState("");
   const [jobError, setJobError] = useState("");
   const [querying, setQuerying] = useState(null);
   const audioRef = useRef(null);
@@ -461,14 +736,23 @@ function App() {
     for (const [group, metadata] of Object.entries(data.schema))
       for (const [key, field] of Object.entries(metadata.items)) {
         const value = draft[group][key];
+        if (!["int", "float"].includes(field.type)) continue;
+        const limit = rangeFor(group, key);
         if (
-          ["int", "float"].includes(field.type) &&
-          (value === "" ||
-            !Number.isFinite(Number(value)) ||
-            (field.type === "int" && !Number.isInteger(Number(value))))
+          value === "" ||
+          !Number.isFinite(Number(value)) ||
+          (field.type === "int" && !Number.isInteger(Number(value)))
         )
           throw new Error(`请检查“${field.description}”的数值。`);
+        if (limit && (Number(value) < limit[0] || Number(value) > limit[1]))
+          throw new Error(
+            `“${field.description}”需在 ${limit[0]}～${limit[1]} 之间。`,
+          );
       }
+    const pairIssue = defaultVoiceIssue(draft.voices);
+    if (pairIssue) throw new Error(pairIssue);
+    const ruleIssue = voiceRuleIssue(parseVoiceRules(draft.voices.rules_json));
+    if (ruleIssue) throw new Error(ruleIssue);
     return clone(draft);
   }
   async function save() {
@@ -506,6 +790,26 @@ function App() {
     let config;
     try {
       config = collect();
+      if (previewVoice.trim()) {
+        // The trial listen may use any replica: pin it to the picked voice and
+        // the model that owns it, ignoring the per-language defaults for now.
+        const voice = previewVoice.trim();
+        const model =
+          previewModel ||
+          modelForVoice(voice, voiceModelPairs) ||
+          config.voices.default_model ||
+          "";
+        if (!model)
+          throw new Error(
+            "所选音色没有对应模型：请先在“音色配置”填写默认模型，或从“获取音色列表”里选择。",
+          );
+        config.voices = {
+          ...config.voices,
+          default_per_language: false,
+          default_model: model,
+          default_voice: voice,
+        };
+      }
     } catch (error) {
       notify(error.message, "error");
       return;
@@ -537,7 +841,7 @@ function App() {
       setResult({
         url: urlRef.current,
         filename: response.filename,
-        model: response.model || config.connection.model,
+        model: response.model || defaultVoicePair(config.voices)[0],
         format: response.mime_type,
         segments: response.segments || 1,
         pause: response.added_pause_ms || 0,
@@ -579,7 +883,7 @@ function App() {
         prefs = cfg.cloning;
       const job = await bridge.apiPost("cloning/create", {
         upload_id: uploaded.upload_id,
-        model: cfg.connection.model,
+        model: defaultVoicePair(cfg.voices)[0],
         prefix: prefs.prefix,
         language: prefs.language,
         enable_preprocess: prefs.enable_preprocess,
@@ -601,10 +905,35 @@ function App() {
   async function loadJobs() {
     try {
       const value = await bridge.apiGet("cloning/jobs");
-      setJobs(value.jobs);
+      // A payload without the list must not white-screen the page.
+      setJobs(Array.isArray(value?.jobs) ? value.jobs : []);
       setJobError("");
     } catch (error) {
       setJobError(error.message);
+    }
+  }
+  async function loadVoices() {
+    if (voiceBusy) return;
+    setVoiceBusy(true);
+    try {
+      const value = await bridge.apiGet("voices/list");
+      const list = (value.voices || []).filter(
+        (item) => typeof item?.voice_id === "string" && item.voice_id,
+      );
+      setRemoteVoices(list);
+      notify(
+        list.length
+          ? `已获取 ${list.length} 支服务端音色；音色下拉会按所选模型筛选，仍可手动填写。`
+          : "该业务空间没有通过 API 创建的音色，请手动填写音色 ID。",
+        list.length ? "success" : "warning",
+      );
+    } catch (error) {
+      notify(
+        `${error.message || "获取音色列表失败"}；可直接手动填写音色 ID。`,
+        "error",
+      );
+    } finally {
+      setVoiceBusy(false);
     }
   }
   async function queryJob(job) {
@@ -637,6 +966,215 @@ function App() {
     setDirty(true);
     notify(`已载入“${entry.name}”的全部设置，保存后应用到聊天。`);
   }
+  const voiceRules = draft ? parseVoiceRules(draft.voices.rules_json) : [];
+  const personaOptions = Array.from(
+    new Set([
+      ...(data?.personas || []),
+      ...(voiceRules || []).map((rule) => rule?.persona).filter(Boolean),
+    ]),
+  );
+  const savedVoices = savedVoiceNames(draft);
+  const defaultPair = draft ? defaultVoicePair(draft.voices) : ["", ""];
+  const voiceConfig = draft?.voices || {};
+  const libraryVoices = savedVoiceEntries(draft);
+  const usedVoices = uniqueStrings([
+    voiceConfig.default_voice,
+    ...(voiceConfig.default_per_language
+      ? voiceLanguages.map(([code]) => voiceConfig[`default_${code}_voice`])
+      : []),
+    ...(voiceRules || []).flatMap((rule) => [
+      rule.voice,
+      ...voiceLanguages.map(([code]) => rule[`${code}_voice`]),
+    ]),
+  ]);
+  // Every pair the page already knows about, so picking a voice can fill in the
+  // model that created it without asking the user to retype a long id.
+  const voiceModelPairs = [
+    ...remoteVoices.map((entry) => [entry.target_model, entry.voice_id]),
+    ...libraryVoices.map((entry) => [entry.model, entry.voice]),
+    [voiceConfig.default_model, voiceConfig.default_voice],
+    ...voiceLanguages.map(([code]) => [
+      voiceConfig[`default_${code}_model`],
+      voiceConfig[`default_${code}_voice`],
+    ]),
+    ...(voiceRules || []).flatMap((rule) => [
+      [rule.model, rule.voice],
+      ...voiceLanguages.map(([code]) => [
+        rule[`${code}_model`],
+        rule[`${code}_voice`],
+      ]),
+    ]),
+  ];
+  const modelFor = (voice) => modelForVoice(voice, voiceModelPairs);
+  const ruleIssues = voiceRuleIssues(voiceRules);
+  const voiceSuggestions = (model) => {
+    const chosen = [];
+    const seen = new Set();
+    const add = (id, name, note) => {
+      const voice = (id || "").trim();
+      if (!voice || seen.has(voice) || !voiceModelMatches(voice, model)) return;
+      seen.add(voice);
+      const label = name && name !== voice ? `${name}（${voice}）` : voice;
+      chosen.push({ id: voice, label: note ? `${label} · ${note}` : label });
+    };
+    remoteVoices.forEach((entry) =>
+      add(entry.voice_id, "", voiceStatusNote(entry.status)),
+    );
+    libraryVoices.forEach((entry) => add(entry.voice, entry.name));
+    usedVoices.forEach((voice) => add(voice, ""));
+    return {
+      options: chosen,
+      library: libraryVoices.length,
+      used: usedVoices.length,
+      remote: remoteVoices.length,
+    };
+  };
+  const voiceHint = (model, fallback) => {
+    const { options, library, used, remote } = voiceSuggestions(model);
+    if (!remote && !library && !used)
+      return "没有可列举的音色：可直接填写，或先点“获取音色列表”/在“音色复刻”页创建音色。";
+    if (!model)
+      return `共 ${options.length} 支可选音色${remote ? `（服务端 ${remote} 支）` : ""}；填写模型后按模型筛选。`;
+    if (!options.length) return `没有模型 ${model} 的音色，仍可手动填写。`;
+    return (
+      (fallback ? `${fallback}；` : "") +
+      `${options.length} 支匹配${remote ? `（服务端共 ${remote} 支）` : ""}。`
+    );
+  };
+  const comboField = ({
+    fieldKey,
+    label,
+    value,
+    onValue,
+    options,
+    helper,
+    placeholder,
+  }) => (
+    <Autocomplete
+      key={fieldKey}
+      freeSolo
+      size="small"
+      sx={{ minWidth: 0, flex: 1, width: "100%" }}
+      options={options}
+      value={value || null}
+      disabled={busy}
+      getOptionLabel={(option) =>
+        typeof option === "string" ? option : option?.id || option?.label || ""
+      }
+      filterOptions={(items, state) => {
+        const word = state.inputValue.trim().toLowerCase();
+        if (!word) return items;
+        return items.filter((item) =>
+          `${item.id} ${item.label}`.toLowerCase().includes(word),
+        );
+      }}
+      onChange={(event, next) =>
+        onValue(typeof next === "string" ? next.trim() : next?.id || "")
+      }
+      onInputChange={(event, text, reason) => {
+        if (reason === "input" || reason === "clear") onValue(text);
+      }}
+      renderOption={(props, option) => {
+        const { key, ...rest } = props;
+        const text = option.label || option.id;
+        // Voice ids are long: keep the row on one line and expose the full
+        // value through the tooltip instead of stretching the popup.
+        const short =
+          text.length > 48 ? `${text.slice(0, 28)}…${text.slice(-16)}` : text;
+        return (
+          <Box component="li" key={key} {...rest} title={text}>
+            <Typography
+              variant="body2"
+              noWrap
+              sx={{ minWidth: 0, fontSize: 13 }}
+            >
+              {short}
+            </Typography>
+          </Box>
+        );
+      }}
+      renderInput={(params) => (
+        <TextField
+          {...params}
+          label={label}
+          placeholder={placeholder}
+          helperText={helper}
+          sx={{ "& input": { textOverflow: "ellipsis" } }}
+        />
+      )}
+    />
+  );
+  const writeVoiceRules = (next) =>
+    change("voices", "rules_json", JSON.stringify(next));
+  const updateVoiceRule = (index, patch) => {
+    if (!voiceRules) return;
+    writeVoiceRules(
+      voiceRules.map((rule, position) =>
+        position === index ? { ...rule, ...patch } : rule,
+      ),
+    );
+  };
+  const removeVoiceRule = (index) => {
+    if (!voiceRules) return;
+    writeVoiceRules(voiceRules.filter((_, position) => position !== index));
+  };
+  const addVoiceRule = () => {
+    const used = new Set((voiceRules || []).map((rule) => rule.persona));
+    const next = personaOptions.find((name) => !used.has(name));
+    if (!next) return;
+    // Seed the row with the default pair so a new rule is valid right away.
+    writeVoiceRules([
+      ...(voiceRules || []),
+      {
+        ...emptyVoiceRule(next),
+        model: defaultPair[0] || "",
+        voice: defaultPair[1] || "",
+      },
+    ]);
+  };
+  const voiceRuleField = (rule, index, prefix, label) => {
+    const modelKey = `${prefix}model`;
+    const voiceKey = `${prefix}voice`;
+    const model = rule[modelKey] || rule.model || "";
+    return (
+      <Stack
+        direction={{ xs: "column", sm: "row" }}
+        spacing={2}
+        key={prefix || "default"}
+      >
+        <TextField
+          size="small"
+          label={`${label}模型`}
+          sx={{ flex: 1, minWidth: 0 }}
+          value={rule[modelKey] || ""}
+          disabled={busy}
+          slotProps={{
+            input: modelClearAdornment(rule[modelKey], () =>
+              updateVoiceRule(index, { [modelKey]: "" }),
+            ),
+          }}
+          onChange={(event) =>
+            updateVoiceRule(index, { [modelKey]: event.target.value })
+          }
+        />
+        {comboField({
+          fieldKey: `rule-${index}-${voiceKey}`,
+          label: `${label}音色 ID`,
+          value: rule[voiceKey] || "",
+          onValue: (next) => {
+            updateVoiceRule(index, { [voiceKey]: next });
+            // Keep the pair consistent: the replica's model owns the model field.
+            const owner = modelFor(next);
+            if (owner && owner !== (rule[modelKey] || ""))
+              updateVoiceRule(index, { [modelKey]: owner });
+          },
+          options: voiceSuggestions(model).options,
+          helper: voiceHint(model),
+          placeholder: "qwen-audio-3.1-tts-plus-myvoice-…",
+        })}
+      </Stack>
+    );
+  };
   const profilePicker = () => (
     <Stack spacing={2}>
       <TextField
@@ -681,8 +1219,35 @@ function App() {
     sourceProfileId === null
       ? data?.api_key_set
       : data?.profiles.find((p) => p.id === sourceProfileId)?.api_key_set;
+  const voiceSchemaMeta = (name) => data.schema.voices.items[name] || {};
+  const voiceField = (name) => {
+    const modelKey = name.replace(/voice$/, "model");
+    const model =
+      voiceConfig[modelKey] ||
+      (name === "default_voice" ? "" : voiceConfig.default_model) ||
+      "";
+    return comboField({
+      fieldKey: `voices.${name}`,
+      label: voiceSchemaMeta(name).description,
+      value: voiceConfig[name],
+      onValue: (next) => {
+        change("voices", name, next);
+        // A replica only synthesizes with the model that created it, so picking
+        // one also fills the paired model field.
+        const owner = modelFor(next);
+        if (owner && owner !== voiceConfig[modelKey])
+          change("voices", modelKey, owner);
+      },
+      options: voiceSuggestions(model).options,
+      helper: voiceHint(model),
+      placeholder: "qwen-audio-3.1-tts-plus-myvoice-…",
+    });
+  };
   const field = (group, name, compact = false) =>
-    ["delivery", "translation"].includes(group) && name === "provider_id" ? (
+    group === "voices" && /(^|_)voice$/.test(name) ? (
+      <Box key={`${group}.${name}`}>{voiceField(name)}</Box>
+    ) : ["delivery", "translation"].includes(group) &&
+      name === "provider_id" ? (
       <TextField
         key={`${group}.${name}`}
         select
@@ -728,7 +1293,12 @@ function App() {
         <Box
           sx={{
             display: "grid",
-            gridTemplateColumns: { xs: "1fr", sm: "repeat(2,minmax(0,1fr))" },
+            // A card with one or two fields reads better as a single column
+            // instead of a half-empty two-column grid.
+            gridTemplateColumns:
+              (names || Object.keys(data.schema[group].items)).length <= 2
+                ? "1fr"
+                : { xs: "1fr", sm: "repeat(2,minmax(0,1fr))" },
             gap: 3,
           }}
         >
@@ -740,9 +1310,7 @@ function App() {
                 gridColumn:
                   ["text", "list"].includes(
                     data.schema[group].items[name].type,
-                  ) ||
-                  ["api_key", "workspace", "voice"].includes(name) ||
-                  (group === "language_models" && name === "enabled")
+                  ) || ["api_key", "workspace"].includes(name)
                     ? "1 / -1"
                     : undefined,
               }}
@@ -759,13 +1327,7 @@ function App() {
     draft &&
     (draft.connection.api_key || (profileKeySet && !clearKey)) &&
     draft.connection.workspace &&
-    (draft.connection.voice ||
-      (draft.language_models.enabled &&
-        ["zh", "en", "ja"].some(
-          (code) =>
-            draft.language_models[`${code}_model`] &&
-            draft.language_models[`${code}_voice`],
-        )));
+    voicesReady(draft.voices);
   const length = draft ? Array.from(draft.preview.text.trim()).length : 0;
   const sidebar = (
     <Box
@@ -793,12 +1355,14 @@ function App() {
           <Typography sx={{ fontWeight: 700, fontSize: 16 }}>
             阿里云TTS助手
           </Typography>
-          <Typography sx={{ fontSize: 9, letterSpacing: 2, color: "#9eafcc" }}>
+          <Typography
+            sx={{ fontSize: 9, letterSpacing: 2, color: "text.disabled" }}
+          >
             VOICE WORKSPACE
           </Typography>
         </Box>
       </Stack>
-      <Typography variant="overline" sx={{ color: "#919eab", ml: 1 }}>
+      <Typography variant="overline" sx={{ color: "text.secondary", ml: 1 }}>
         工作台
       </Typography>
       <List dense disablePadding>
@@ -808,7 +1372,7 @@ function App() {
               <Typography
                 component="div"
                 variant="overline"
-                sx={{ color: "#919eab", mt: 3, ml: 1 }}
+                sx={{ color: "text.secondary", mt: 3, ml: 1 }}
               >
                 插件配置
               </Typography>
@@ -821,9 +1385,21 @@ function App() {
                 borderRadius: 2,
                 mb: 0.5,
                 py: 1.15,
-                color: "#637381",
-                "&.Mui-selected": { bgcolor: "#fce4ec", color: "#E91E63" },
-                "&.Mui-selected:hover": { bgcolor: "#f8bbd0" },
+                color: "text.secondary",
+                "&:hover": { bgcolor: "action.hover" },
+                "&.Mui-selected": {
+                  bgcolor: (theme) =>
+                    theme.palette.mode === "dark"
+                      ? "rgba(233,30,99,0.24)"
+                      : "#fce4ec",
+                  color: "primary.main",
+                },
+                "&.Mui-selected:hover": {
+                  bgcolor: (theme) =>
+                    theme.palette.mode === "dark"
+                      ? "rgba(233,30,99,0.34)"
+                      : "#f8bbd0",
+                },
               }}
             >
               <ListItemIcon sx={{ color: "inherit", minWidth: 34 }}>
@@ -840,9 +1416,9 @@ function App() {
       <Box sx={{ mt: "auto", pt: 4, ml: 1 }}>
         <Chip
           size="small"
-          label="v1.1.2"
+          label="v1.2.0"
           variant="outlined"
-          sx={{ color: "#a8b9d3", borderColor: "#41516c" }}
+          sx={{ color: "text.secondary", borderColor: "divider" }}
         />
       </Box>
     </Box>
@@ -860,9 +1436,10 @@ function App() {
             paper: {
               sx: {
                 width: drawerWidth,
-                bgcolor: "#fff",
-                color: "#212b36",
-                borderRight: "1px solid #f0f1f3",
+                bgcolor: "background.paper",
+                color: "text.primary",
+                borderRight: 1,
+                borderColor: "divider",
               },
             },
           }}
@@ -1069,34 +1646,67 @@ function App() {
                             />
                           )}
                           <Stack
-                            direction={{ xs: "column", sm: "row" }}
+                            direction={{ xs: "column", md: "row" }}
                             spacing={2}
                             sx={{
                               justifyContent: "space-between",
-                              alignItems: { sm: "center" },
+                              alignItems: { md: "flex-start" },
                             }}
                           >
-                            <TextField
-                              select
-                              size="small"
-                              id="language"
-                              label="朗读语言"
-                              value={draft.preview.language}
-                              onChange={(event) =>
-                                change(
-                                  "preview",
-                                  "language",
-                                  event.target.value,
-                                )
-                              }
-                              sx={{ minWidth: 180 }}
+                            <Stack
+                              direction={{ xs: "column", sm: "row" }}
+                              spacing={2}
+                              sx={{ minWidth: 0, flex: 1, width: "100%" }}
                             >
-                              {["auto", "zh", "en", "ja"].map((code) => (
-                                <MenuItem key={code} value={code}>
-                                  {optionLabel[code]}
-                                </MenuItem>
-                              ))}
-                            </TextField>
+                              <TextField
+                                select
+                                size="small"
+                                id="language"
+                                label="朗读语言"
+                                value={draft.preview.language}
+                                onChange={(event) =>
+                                  change(
+                                    "preview",
+                                    "language",
+                                    event.target.value,
+                                  )
+                                }
+                                sx={{ minWidth: 170 }}
+                              >
+                                {["auto", "zh", "en", "ja"].map((code) => (
+                                  <MenuItem key={code} value={code}>
+                                    {optionLabel[code]}
+                                  </MenuItem>
+                                ))}
+                              </TextField>
+                              <Box sx={{ minWidth: 0, flex: 1, width: "100%" }}>
+                                {comboField({
+                                  fieldKey: "preview.voice",
+                                  label: "试听音色",
+                                  value: previewVoice,
+                                  onValue: (next) => {
+                                    const picked = (next || "").trim();
+                                    setPreviewVoice(picked);
+                                    setPreviewModel(
+                                      picked ? modelFor(picked) : "",
+                                    );
+                                  },
+                                  options: voiceSuggestions("").options,
+                                  helper: previewVoice.trim()
+                                    ? `模型：${
+                                        previewModel ||
+                                        modelFor(previewVoice.trim()) ||
+                                        "未匹配到，将沿用草稿模型"
+                                      }（选择音色时自动填入）· 仅用于本次试听`
+                                    : `跟随草稿默认音色${
+                                        defaultPair[0]
+                                          ? `（${defaultPair[0]}）`
+                                          : ""
+                                      }；选择后只影响本次试听。`,
+                                  placeholder: "留空则跟随草稿默认音色",
+                                })}
+                              </Box>
+                            </Stack>
                             <Button
                               id="generate"
                               variant="contained"
@@ -1180,60 +1790,6 @@ function App() {
                     </Card>
                     <Stack spacing={3}>
                       <Card sx={cardSx}>
-                        <CardContent sx={{ textAlign: "center", p: 3 }}>
-                          <Avatar
-                            sx={{
-                              width: 64,
-                              height: 64,
-                              mx: "auto",
-                              bgcolor: "primary.main",
-                              mb: 2,
-                            }}
-                          >
-                            <GraphicEqIcon fontSize="large" />
-                          </Avatar>
-                          <Typography variant="h6" sx={{ fontSize: 16 }}>
-                            默认音色
-                          </Typography>
-                          <Typography
-                            id="current-model"
-                            variant="caption"
-                            color="text.secondary"
-                            sx={{ display: "block", my: 1 }}
-                          >
-                            {draft.connection.model}
-                          </Typography>
-                          <Box
-                            component="code"
-                            id="current-voice"
-                            sx={{
-                              display: "block",
-                              p: 1.5,
-                              bgcolor: "action.hover",
-                              borderRadius: 1.5,
-                              fontSize: 11,
-                            }}
-                          >
-                            {draft.connection.voice || "请填写音色 ID"}
-                          </Box>
-                          {draft.language_models.enabled && (
-                            <Alert
-                              severity="info"
-                              sx={{ mt: 2, textAlign: "left" }}
-                            >
-                              已开启按语言选择模型，生成时使用对应语言的模型与音色；未配置时使用此默认配对。
-                            </Alert>
-                          )}
-                          <Button
-                            size="small"
-                            onClick={() => navigate("connection")}
-                            sx={{ mt: 1 }}
-                          >
-                            编辑服务与音色 →
-                          </Button>
-                        </CardContent>
-                      </Card>
-                      <Card sx={cardSx}>
                         <CardContent sx={{ p: 3 }}>
                           <Typography
                             variant="subtitle1"
@@ -1276,6 +1832,262 @@ function App() {
                         qwen_speak。情绪与升降调是模型表现，分段停顿是插件追加的静音。
                       </Alert>
                     )}
+                  </Stack>
+                )}
+                {page === "voices" && (
+                  <Stack spacing={3}>
+                    <Card sx={cardSx}>
+                      <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+                        <Stack
+                          direction="row"
+                          spacing={1.5}
+                          sx={{ alignItems: "center", mb: 1 }}
+                        >
+                          <Typography variant="h6" sx={{ fontSize: 17 }}>
+                            默认音色
+                          </Typography>
+                          <Box sx={{ flex: 1 }} />
+                          <Button
+                            size="small"
+                            startIcon={<RefreshIcon />}
+                            disabled={voiceBusy || busy}
+                            onClick={loadVoices}
+                          >
+                            {voiceBusy ? "获取中…" : "获取音色列表"}
+                          </Button>
+                        </Stack>
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ display: "block", mb: 2 }}
+                        >
+                          模型 ID 直接手填（官方没有可用的模型清单接口）。
+                        </Typography>
+                        <Stack spacing={2.5}>
+                          {field("voices", "enabled")}
+                          {field("voices", "default_per_language")}
+                          <Box
+                            sx={{
+                              display: "grid",
+                              gridTemplateColumns: {
+                                xs: "1fr",
+                                sm: "repeat(2,minmax(0,1fr))",
+                              },
+                              gap: 2.5,
+                            }}
+                          >
+                            {field("voices", "default_model")}
+                            {field("voices", "default_voice")}
+                            {draft.voices.default_per_language &&
+                              voiceLanguages.flatMap(([code]) => [
+                                <Box key={`${code}-model`}>
+                                  {field("voices", `default_${code}_model`)}
+                                </Box>,
+                                <Box key={`${code}-voice`}>
+                                  {field("voices", `default_${code}_voice`)}
+                                </Box>,
+                              ])}
+                          </Box>
+                          {defaultVoiceIssue(draft.voices) && (
+                            <Alert severity="error" sx={{ py: 0 }}>
+                              {defaultVoiceIssue(draft.voices)}
+                            </Alert>
+                          )}
+                        </Stack>
+                      </CardContent>
+                    </Card>
+                    <Card sx={cardSx}>
+                      <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+                        <Stack
+                          direction="row"
+                          spacing={1.5}
+                          sx={{ alignItems: "center", mb: 1 }}
+                        >
+                          <Typography variant="h6" sx={{ fontSize: 17 }}>
+                            人格音色规则
+                          </Typography>
+                          <Chip
+                            size="small"
+                            color={voiceRules ? "default" : "error"}
+                            label={
+                              voiceRules
+                                ? `${voiceRules.length} 条`
+                                : "JSON 错误"
+                            }
+                          />
+                        </Stack>
+                        <Typography variant="caption" color="text.secondary">
+                          AstrBot
+                          每次朗读时读取当前会话人格；同一人格只能有一条规则，模型与音色必须成对填写。模型手填，音色可下拉（先点“获取音色列表”）或手填，并按“模型
+                          ID 前缀”筛选。人格在 AstrBot 人格管理中创建，会话里用
+                          /persona 切换。
+                        </Typography>
+                        {!voiceRules && (
+                          <Alert severity="error" sx={{ mt: 2 }}>
+                            规则 JSON 无法解析，请在下方“高级”里修正后再保存。
+                          </Alert>
+                        )}
+                        {voiceRules && voiceRules.length === 0 && (
+                          <Alert severity="info" sx={{ mt: 2 }}>
+                            尚未配置人格规则，所有人格都使用默认音色。
+                          </Alert>
+                        )}
+                        {voiceRules && voiceRules.length > 0 && (
+                          <Stack spacing={2} sx={{ mt: 2 }}>
+                            {voiceRules.map((rule, index) => (
+                              <Box
+                                key={`${rule.persona || "rule"}-${index}`}
+                                sx={{
+                                  border: 1,
+                                  borderColor: "divider",
+                                  borderRadius: 2,
+                                  p: 2,
+                                }}
+                              >
+                                <Stack spacing={2}>
+                                  <Stack
+                                    direction={{ xs: "column", sm: "row" }}
+                                    spacing={2}
+                                    sx={{ alignItems: { sm: "center" } }}
+                                  >
+                                    <TextField
+                                      select
+                                      size="small"
+                                      label="人格"
+                                      value={rule.persona || ""}
+                                      disabled={busy}
+                                      error={
+                                        !rule.persona || !!ruleIssues[index]
+                                      }
+                                      onChange={(event) =>
+                                        updateVoiceRule(index, {
+                                          persona: event.target.value,
+                                        })
+                                      }
+                                      sx={{ minWidth: 200, flex: 1 }}
+                                    >
+                                      {personaOptions
+                                        .filter(
+                                          (name) =>
+                                            name === rule.persona ||
+                                            !(voiceRules || []).some(
+                                              (other, position) =>
+                                                position !== index &&
+                                                other.persona === name,
+                                            ),
+                                        )
+                                        .map((name) => (
+                                          <MenuItem key={name} value={name}>
+                                            {name}
+                                          </MenuItem>
+                                        ))}
+                                    </TextField>
+                                    <FormControlLabel
+                                      label="按语言细分"
+                                      labelPlacement="start"
+                                      sx={{ m: 0, gap: 1 }}
+                                      control={
+                                        <Switch
+                                          checked={!!rule.per_language}
+                                          disabled={busy}
+                                          onChange={(event) =>
+                                            updateVoiceRule(index, {
+                                              per_language:
+                                                event.target.checked,
+                                            })
+                                          }
+                                        />
+                                      }
+                                    />
+                                    <Tooltip title="删除该人格规则">
+                                      <IconButton
+                                        disabled={busy}
+                                        onClick={() => removeVoiceRule(index)}
+                                      >
+                                        <DeleteIcon />
+                                      </IconButton>
+                                    </Tooltip>
+                                  </Stack>
+                                  <Stack spacing={2}>
+                                    {!rule.per_language &&
+                                      voiceRuleField(rule, index, "", "")}
+                                    {rule.per_language &&
+                                      voiceLanguages.map(([code, label]) =>
+                                        voiceRuleField(
+                                          rule,
+                                          index,
+                                          `${code}_`,
+                                          label,
+                                        ),
+                                      )}
+                                  </Stack>
+                                  {ruleIssues[index] && (
+                                    <Alert severity="error" sx={{ py: 0 }}>
+                                      {ruleIssues[index]}
+                                    </Alert>
+                                  )}
+                                </Stack>
+                              </Box>
+                            ))}
+                          </Stack>
+                        )}
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          spacing={2}
+                          sx={{ mt: 2, alignItems: { sm: "center" } }}
+                        >
+                          <Button
+                            startIcon={<AddIcon />}
+                            variant="outlined"
+                            disabled={
+                              busy || !voiceRules || !personaOptions.length
+                            }
+                            onClick={addVoiceRule}
+                          >
+                            添加人格规则
+                          </Button>
+                          {savedVoices.length > 0 && (
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                            >
+                              已保存音色：{savedVoices.join("、")}
+                            </Typography>
+                          )}
+                          {!personaOptions.length && (
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                            >
+                              未读取到 AstrBot 人格；仍可在下方手写规则或使用
+                              /语音设置 音色配置。
+                            </Typography>
+                          )}
+                        </Stack>
+                      </CardContent>
+                    </Card>
+                    <Card sx={cardSx}>
+                      <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+                        <Typography
+                          variant="subtitle1"
+                          sx={{ fontWeight: 650, mb: 1 }}
+                        >
+                          高级：规则 JSON
+                        </Typography>
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ display: "block", mb: 2 }}
+                        >
+                          与上面的表格是同一份配置；适合批量粘贴或排查问题时使用。
+                        </Typography>
+                        {field("voices", "rules_json")}
+                      </CardContent>
+                    </Card>
+                    <Alert severity="info">
+                      优先级：人格规则（含规则内的语言配对）&gt;
+                      默认音色；未命中的语言回退到规则的默认配对，未命中的人格回退到默认音色。命令朗读、自然语言工具、随机语音与页面试听都遵循同一套规则；切换配置文件时音色配置随档案一起切换。
+                    </Alert>
                   </Stack>
                 )}
                 {page === "clone" && (
@@ -1374,7 +2186,13 @@ function App() {
                               15 分钟后过期。
                             </Typography>
                             <Divider />
-                            {field("connection", "model")}
+                            {field("voices", "default_model")}
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                            >
+                              音色绑定创建时的模型；这里的“默认模型”来自“音色配置”，可随时在该页修改。
+                            </Typography>
                             <Box
                               sx={{
                                 display: "grid",
@@ -1490,15 +2308,19 @@ function App() {
                                     size="small"
                                     variant="contained"
                                     onClick={() => {
-                                      change("connection", "model", job.model);
                                       change(
-                                        "connection",
-                                        "voice",
+                                        "voices",
+                                        "default_model",
+                                        job.model,
+                                      );
+                                      change(
+                                        "voices",
+                                        "default_voice",
                                         job.voice_id,
                                       );
                                       navigate("studio");
                                       notify(
-                                        "音色已填入草稿，可先试听，再保存应用到聊天。",
+                                        "音色已填入默认音色草稿，可先试听，再保存应用到聊天。",
                                       );
                                     }}
                                   >

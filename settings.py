@@ -11,12 +11,14 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .pronunciation import compose_settings, parse_dictionary
-from .language_models import LANGUAGE_NAMES, language_pair
+from .voices import LANGUAGE_CODES, default_pair, normalize_voices
 from .tts_client import TTSError, build_payload, model_id, number, workspace_base
 
 SCHEMA = json.loads(
     Path(__file__).with_name("_conf_schema.json").read_text(encoding="utf8")
 )
+# Groups that only exist in 1.1.x profiles; accepted while loading, never saved back.
+LEGACY_GROUPS = frozenset({"language_models"})
 # Internal preview defaults are not exposed as plugin settings.
 SCHEMA["preview"] = {
     "description": "音色试听",
@@ -83,6 +85,102 @@ RANGES = {
 }
 
 
+# The model `_conf_schema.json` ships as the default; the legacy fields may replace
+# it only while no default voice has been chosen.
+_DEFAULT_VOICE_MODEL = SCHEMA["voices"]["items"]["default_model"]["default"]
+
+
+def _legacy_voice_seed(config):
+    """Return the voice defaults implied by the pre-1.2 connection fields."""
+    connection = config.get("connection", {})
+    legacy = config.get("language_models", {})
+    if not isinstance(connection, dict) or not isinstance(legacy, dict):
+        return None
+    seed = {
+        "default_model": str(connection.get("model", "") or "").strip(),
+        "default_voice": str(connection.get("voice", "") or "").strip(),
+        "default_per_language": bool(legacy.get("enabled", False)),
+    }
+    for code in LANGUAGE_CODES:
+        seed[f"default_{code}_model"] = str(legacy.get(f"{code}_model", "") or "").strip()
+        seed[f"default_{code}_voice"] = str(legacy.get(f"{code}_voice", "") or "").strip()
+    configured = any(seed[field] for field in ("default_model", "default_voice")) or any(
+        seed[f"default_{code}_model"] for code in LANGUAGE_CODES
+    )
+    return seed if configured else None
+
+
+def _profile_voice_seed(config):
+    """Recover a pre-1.2 voice from the saved active profile.
+
+    AstrBot rebuilds a plugin config from the current schema before the plugin
+    starts, so an upgraded installation no longer has the legacy top-level
+    fields. The profile archive is stored as one JSON string and keeps them.
+    """
+    profiles = config.get("profiles", {})
+    if not isinstance(profiles, dict):
+        return None
+    try:
+        entries = json.loads(profiles.get("entries_json", "[]") or "[]")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(entries, list) or not entries:
+        return None
+    active = profiles.get("active_id", "default")
+    entry = next(
+        (item for item in entries if isinstance(item, dict) and item.get("id") == active),
+        None,
+    )
+    if entry is None:
+        entry = next((item for item in entries if isinstance(item, dict)), None)
+    if entry is None or not isinstance(entry.get("config"), dict):
+        return None
+    return _legacy_voice_seed(entry["config"])
+
+
+def _text(value):
+    """Read a stored field as stripped text; a missing or odd value counts as blank."""
+    return str(value or "").strip()
+
+
+def _voice_seed_gaps(voices, seed):
+    """Return the blank voice fields an old-format seed is allowed to fill.
+
+    Only blanks are filled, so a stored user choice is never replaced: the default
+    pair is seeded while its voice is empty and its model is still blank or the
+    shipped default, and a language pair is seeded only while both of its halves
+    are empty and the old format held a complete pair for that language.
+    """
+    if not seed:
+        return {}
+    voices = voices if isinstance(voices, dict) else {}
+    seed_model = _text(seed.get("default_model"))
+    seed_voice = _text(seed.get("default_voice"))
+    model = _text(voices.get("default_model"))
+    voice = _text(voices.get("default_voice"))
+    gaps = {}
+    if (
+        not voice
+        and (not model or model == _DEFAULT_VOICE_MODEL)
+        and (seed_model or seed_voice)
+    ):
+        gaps["default_model"] = seed_model
+        gaps["default_voice"] = seed_voice
+    filled_language = False
+    for code in LANGUAGE_CODES:
+        pair = {
+            f"default_{code}_{key}": _text(seed.get(f"default_{code}_{key}"))
+            for key in ("model", "voice")
+        }
+        if not all(pair.values()) or any(_text(voices.get(field)) for field in pair):
+            continue
+        gaps.update(pair)
+        filled_language = True
+    if filled_language and not voices.get("default_per_language", False):
+        gaps["default_per_language"] = True
+    return gaps
+
+
 def snapshot(config):
     """Read a complete, independent snapshot, migrating old short workspace IDs."""
     result = {
@@ -92,6 +190,10 @@ def snapshot(config):
         }
         for group, meta in SCHEMA.items()
     }
+    # The pre-1.2 fields still explain blank voice settings; stored values win.
+    voices = result["voices"]
+    seed = _legacy_voice_seed(config) or _profile_voice_seed(config)
+    voices.update(_voice_seed_gaps(voices, seed))
     # Migrate each old profile independently; never overwrite a new language dictionary.
     previous = config.get("pronunciation", {})
     # AstrBot may already have inserted new schema defaults while loading an old file.
@@ -106,6 +208,57 @@ def snapshot(config):
     if re.fullmatch(r"ws-[A-Za-z0-9]+", address):
         result["connection"]["workspace"] = address + ".cn-beijing.maas.aliyuncs.com"
     return result
+
+
+def migrate_voices(config):
+    """Move the pre-1.2 model/voice fields into the voice rules group once.
+
+    Only blank voice fields are filled from the old groups, so a value the user
+    already stored is kept as it is.
+
+    Returns:
+        True when the stored configuration was rewritten.
+    """
+    legacy = config.get("language_models")
+    connection = config.get("connection", {})
+    seed = _legacy_voice_seed(config) or _profile_voice_seed(config)
+    stale = (
+        legacy is not None
+        or (
+            isinstance(connection, dict)
+            and any(key in connection for key in ("model", "voice"))
+        )
+        or bool(_voice_seed_gaps(config.get("voices"), seed))
+    )
+    if not stale:
+        return False
+    voices = snapshot(config)["voices"]
+    try:
+        voices = normalize_voices(voices)
+    except TTSError:
+        # Keep the raw values; the dashboard reports the error when saving.
+        pass
+    config["voices"] = voices
+    if legacy is not None:
+        config.pop("language_models", None)
+    if isinstance(connection, dict):
+        for key in ("model", "voice"):
+            connection.pop(key, None)
+    # Saved profiles carry their own copy of the old groups; project them too so
+    # the stored JSON stops advertising fields the schema no longer has.
+    stored = config.get("profiles", {})
+    if isinstance(stored, dict) and str(stored.get("entries_json", "[]")).strip() not in ("", "[]"):
+        probe = dict(config)
+        try:
+            entries = profile_entries(probe)
+        except TTSError:
+            entries = None
+        if entries is not None:
+            config["profiles"] = {
+                "active_id": stored.get("active_id", "default"),
+                "entries_json": json.dumps(entries, ensure_ascii=False),
+            }
+    return True
 
 
 def revision(config):
@@ -178,8 +331,8 @@ def parse_saved_voices(raw):
     return result
 
 
-def saved_voice_connection(config, name):
-    """Resolve a unique saved voice and return one atomic connection update."""
+def saved_voice_settings(config, name):
+    """Resolve a unique saved voice and return the updated voice options."""
     cfg = snapshot(config)
     matches = [
         entry
@@ -189,24 +342,70 @@ def saved_voice_connection(config, name):
     if len(matches) != 1:
         raise TTSError("未找到唯一的已保存音色名称，请查看列表或修改重名音色。")
     entry = matches[0]
-    connection = dict(cfg["connection"])
     if entry["workspace"]:
-        current = urlparse(workspace_base(connection["workspace"])).hostname
+        current = urlparse(workspace_base(cfg["connection"]["workspace"])).hostname
         if entry["workspace"] != current:
             raise TTSError(
                 "该音色属于其他业务空间，请先在后台配置对应的业务空间和 API Key。"
             )
-    connection.update(model=entry["model"], voice=entry["voice"])
-    return connection
+    voices = cfg["voices"]
+    voices.update(default_model=entry["model"], default_voice=entry["voice"])
+    return voices
+
+
+def _split_legacy_patch(patch):
+    """Accept the pre-1.2 dashboard shape and fold it into the voice options.
+
+    Only fields really present in the patch are written, so an unrelated update
+    never clears a configured pair, and an unknown key is reported instead of
+    being ignored. A lone legacy model (or voice) clears its stale counterpart
+    instead of pairing a new model with the old voice.
+    """
+    patch = dict(patch)
+    updates = {}
+    languages = patch.pop("language_models", None)
+    if languages is not None:
+        if not isinstance(languages, dict):
+            raise TTSError("按语言选择模型设置格式错误。")
+        allowed = {"enabled"} | {
+            f"{code}_{key}" for code in LANGUAGE_CODES for key in ("model", "voice")
+        }
+        if set(languages) - allowed:
+            raise TTSError("按语言选择模型包含未知设置。")
+        if "enabled" in languages:
+            enabled = languages["enabled"]
+            if type(enabled) is not bool:
+                raise TTSError("按语言选择模型开关必须为布尔值。")
+            updates["default_per_language"] = enabled
+        for code in LANGUAGE_CODES:
+            for key in ("model", "voice"):
+                field = f"{code}_{key}"
+                if field in languages:
+                    updates[f"default_{field}"] = languages[field]
+    connection = patch.get("connection")
+    if isinstance(connection, dict) and set(connection) & {"model", "voice"}:
+        connection = dict(connection)
+        pair = {
+            key: connection.pop(key) for key in ("model", "voice") if key in connection
+        }
+        for key in ("model", "voice"):
+            updates[f"default_{key}"] = pair.get(key, "")
+        patch["connection"] = connection
+    return patch, updates
 
 
 def validate_draft(current, patch, clear_api_key=False, source_profile_id=None):
     """Apply only schema fields, with strict types, bounds and semantic checks."""
-    if not isinstance(patch, dict) or set(patch) - set(SCHEMA):
+    if not isinstance(patch, dict):
         raise TTSError("设置包含未知分类或格式错误。")
     if len(json.dumps(patch, ensure_ascii=False).encode()) > 128 * 1024:
         raise TTSError("设置内容超过 128 KiB 限制。")
+    patch, legacy_updates = _split_legacy_patch(patch)
+    if set(patch) - set(SCHEMA):
+        raise TTSError("设置包含未知分类或格式错误。")
     result = snapshot(current)
+    if legacy_updates:
+        result["voices"].update(legacy_updates)
     if source_profile_id is not None:
         matches = [p for p in profile_entries(current) if p["id"] == source_profile_id]
         if len(matches) != 1:
@@ -260,12 +459,7 @@ def validate_draft(current, patch, clear_api_key=False, source_profile_id=None):
         if re.fullmatch(r"ws-[A-Za-z0-9]+", address):
             raise TTSError("请填写业务空间完整域名，而不是短 ID。")
         c["workspace"] = urlparse(workspace_base(address)).hostname
-    c["model"] = model_id(c["model"])
-    if c["voice"] and not re.fullmatch(r"[A-Za-z0-9_.-]{1,256}", c["voice"]):
-        raise TTSError("音色 ID 格式不正确。")
-    for code in LANGUAGE_NAMES:
-        model, voice = language_pair(result["language_models"], code)
-        result["language_models"].update({f"{code}_model": model, f"{code}_voice": voice})
+    result["voices"] = normalize_voices(result["voices"])
     result["voice_library"]["entries_json"] = json.dumps(
         parse_saved_voices(result["voice_library"]["entries_json"]),
         ensure_ascii=False,
@@ -274,7 +468,8 @@ def validate_draft(current, patch, clear_api_key=False, source_profile_id=None):
     for code in ("zh", "ja", "en"):
         parse_dictionary(result["pronunciation"][f"dictionary_{code}_json"])
     audio = compose_settings(result["audio"], result["pronunciation"])
-    build_payload(c["model"], c["voice"] or "validation", "验证", audio)
+    model, voice = default_pair(result)
+    build_payload(model or "qwen-audio-3.1-tts-plus", voice or "validation", "验证", audio)
     if not re.fullmatch(r"[A-Za-z0-9]{1,10}", result["cloning"]["prefix"]):
         raise TTSError("音色前缀需为 1～10 位英文字母或数字。")
     return result
@@ -308,7 +503,7 @@ def profile_entries(config):
             or entry["id"] in seen or not isinstance(entry["name"], str)
             or not 1 <= len(entry["name"].strip()) <= 80
             or not isinstance(entry["config"], dict)
-            or set(entry["config"]) - set(profile_config(cfg))
+            or set(entry["config"]) - set(profile_config(cfg)) - LEGACY_GROUPS
         ):
             raise TTSError("配置文件的标识、名称或设置格式错误。")
         seen.add(entry["id"])
@@ -319,8 +514,10 @@ def profile_entries(config):
     entries = [{"id": "default", "name": "默认配置", "config": profile_config(cfg)}]
     for index, voice in enumerate(parse_saved_voices(cfg["voice_library"]["entries_json"])):
         migrated = profile_config(cfg)
+        migrated["voices"].update(
+            default_model=voice["model"], default_voice=voice["voice"]
+        )
         connection = migrated["connection"]
-        connection.update(model=voice["model"], voice=voice["voice"])
         if voice["workspace"] and voice["workspace"] != connection["workspace"]:
             connection.update(workspace=voice["workspace"], api_key="")
         entries.append(

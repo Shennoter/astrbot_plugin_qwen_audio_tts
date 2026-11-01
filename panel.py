@@ -12,10 +12,10 @@ from pathlib import Path
 from astrbot.api import logger
 
 from .delivery import parse_plan
-from .language_models import speech_connection
+from .voices import default_pair, fallback_pair, speech_connection
 from .enrollment import MAX_AUDIO, MAX_MULTIPART, EnrollmentManager, validate_wav
 from .settings import public_settings, revision, snapshot, validate_draft, save_profile
-from .tts_client import TTSError
+from .tts_client import TTSError, list_voices, workspace_base
 
 
 class PanelMixin:
@@ -31,12 +31,40 @@ class PanelMixin:
             self._enrollment_manager = EnrollmentManager(root)
         return self._enrollment_manager
 
+    async def _persona_names(self):
+        """List AstrBot persona ids so the voice rules editor can offer them."""
+        manager = getattr(self.context, "persona_manager", None)
+        getter = getattr(manager, "get_all_personas", None)
+        if getter is None:
+            return []
+        try:
+            entries = await getter()
+        except Exception as exc:  # noqa: BLE001 - The editor still accepts manual ids.
+            logger.debug("Persona list unavailable (%s).", type(exc).__name__)
+            return []
+        names = []
+        for entry in entries or ():
+            name = (
+                entry.get("persona_id")
+                if isinstance(entry, dict)
+                else getattr(entry, "persona_id", None)
+            )
+            if isinstance(name, str) and name and name not in names:
+                names.append(name)
+        return names
+
     def _clone_connection(self):
         if self._closed:
             raise TTSError("插件已停用。")
         cfg = snapshot(self.config)
         if not cfg["connection"]["api_key"] or not cfg["connection"]["workspace"]:
             raise TTSError("请先保存 API Key 和业务空间完整域名。")
+        # Enrollment logs the model, so expose a resolved pair even when only
+        # per-language entries are configured.
+        model, voice = default_pair(cfg)
+        if not model:
+            model = fallback_pair(cfg)[0]
+        cfg["connection"].update(model=model, voice=voice)
         return cfg
 
     async def cloning_upload(self):
@@ -162,6 +190,23 @@ class PanelMixin:
         except Exception as exc:  # noqa: BLE001 - Return safe errors at the authenticated API boundary.
             return self._panel_error(exc)
 
+    async def voice_list(self):
+        """List API-created voice replicas so the editor can offer them."""
+        web = self._web
+        if not web.request.username:
+            return web.error_response("请先登录 AstrBot 管理面板。", status_code=401)
+        try:
+            connection = self._clone_connection()["connection"]
+            voices = await asyncio.to_thread(
+                list_voices,
+                workspace_base(connection["workspace"]),
+                connection["api_key"],
+                20,
+            )
+            return web.json_response({"voices": voices, "total": len(voices)})
+        except Exception as exc:  # noqa: BLE001 - Return safe errors at the authenticated API boundary.
+            return self._panel_error(exc)
+
     def _panel_error(self, exc, keys=()):
         if isinstance(exc, TTSError):
             message = str(exc)
@@ -180,6 +225,7 @@ class PanelMixin:
             return web.error_response("请先登录 AstrBot 管理面板。", status_code=401)
         public = public_settings(self.config)
         cfg = public["config"]
+        model, voice = default_pair(cfg)
         return web.json_response(
             {
                 **public,
@@ -192,12 +238,11 @@ class PanelMixin:
                 "text": cfg["preview"]["text"],
                 "language": cfg["preview"]["language"],
                 "max_chars": cfg["reply"]["max_chars"],
-                "model": cfg["connection"]["model"],
-                "voice": cfg["connection"]["voice"],
+                "personas": await self._persona_names(),
+                "model": model,
+                "voice": voice,
                 "configured": bool(
-                    public["api_key_set"]
-                    and cfg["connection"]["workspace"]
-                    and cfg["connection"]["voice"]
+                    public["api_key_set"] and cfg["connection"]["workspace"] and voice
                 ),
                 "audio": cfg["audio"],
             }
@@ -290,7 +335,7 @@ class PanelMixin:
                     body.get("delivery_plan"), text.strip(), cfg["delivery"]
                 )
                 models = list(dict.fromkeys(
-                    speech_connection(cfg, item["text"], code)[1]["model"]
+                    speech_connection(cfg, item["text"], code)[1].get("model", "")
                     for item in (plan or [{"text": text.strip()}])
                 ))
                 path = await self._speak(
