@@ -1173,7 +1173,7 @@ function App() {
       <Box sx={{ mt: "auto", pt: 4, ml: 1 }}>
         <Chip
           size="small"
-          label="v1.2.6"
+          label="v1.2.7"
           variant="outlined"
           sx={{ color: "text.secondary", borderColor: "divider" }}
         />
@@ -1642,7 +1642,7 @@ function App() {
                           color="text.secondary"
                           sx={{ display: "block", mb: 2 }}
                         >
-                          所有人格规则都没有命中时使用；未配置时朗读会提示到本页填写。音色 ID 以模型名开头：“获取音色列表”读取该业务空间通过 API 创建的音色，音色可下拉选择也可手填，并按当前模型筛选；模型 ID 直接手填（官方没有可用的模型清单接口）。
+                          模型 ID 直接手填（官方没有可用的模型清单接口）。
                         </Typography>
                         <Stack spacing={2.5}>
                           {field("voices", "enabled")}

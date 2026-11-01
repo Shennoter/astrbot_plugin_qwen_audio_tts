@@ -264,7 +264,7 @@ def synthesize_http(base, api_key, payload, timeout=60):
         headers={
             "Authorization": "Bearer " + api_key,
             "Content-Type": "application/json",
-            "User-Agent": "AstrBot-Qwen-Audio-Plugin/1.2.6",
+            "User-Agent": "AstrBot-Qwen-Audio-Plugin/1.2.7",
         },
         method="POST",
     )
@@ -332,7 +332,7 @@ def _post_json(url, api_key, payload, timeout, failure):
         headers={
             "Authorization": "Bearer " + str(api_key).strip(),
             "Content-Type": "application/json",
-            "User-Agent": "AstrBot-Qwen-Audio-Plugin/1.2.6",
+            "User-Agent": "AstrBot-Qwen-Audio-Plugin/1.2.7",
         },
         method="POST",
     )
