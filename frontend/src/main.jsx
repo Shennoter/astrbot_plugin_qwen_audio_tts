@@ -1162,11 +1162,13 @@ function App() {
           label: `${label}音色 ID`,
           value: rule[voiceKey] || "",
           onValue: (next) => {
-            updateVoiceRule(index, { [voiceKey]: next });
-            // Keep the pair consistent: the replica's model owns the model field.
+            // Write both fields together; separate updates use the same render's
+            // rules and the model update would discard the chosen voice.
             const owner = modelFor(next);
-            if (owner && owner !== (rule[modelKey] || ""))
-              updateVoiceRule(index, { [modelKey]: owner });
+            updateVoiceRule(index, {
+              [voiceKey]: next,
+              ...(owner ? { [modelKey]: owner } : {}),
+            });
           },
           options: voiceSuggestions(model).options,
           helper: voiceHint(model),
@@ -1416,7 +1418,7 @@ function App() {
       <Box sx={{ mt: "auto", pt: 4, ml: 1 }}>
         <Chip
           size="small"
-          label="v1.2.0"
+          label="v1.2.1"
           variant="outlined"
           sx={{ color: "text.secondary", borderColor: "divider" }}
         />

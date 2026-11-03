@@ -5,6 +5,7 @@
 import copy
 import json
 import unittest
+from pathlib import Path
 
 from . import settings
 from . import test_plugin as h
@@ -177,6 +178,49 @@ class VoiceResolutionTests(unittest.TestCase):
 
 
 class MigrationTests(unittest.TestCase):
+    def host_load(self, config):
+        """Apply AstrBot's recursive schema projection before plugin startup."""
+        schema = json.loads(Path(settings.__file__).with_name("_conf_schema.json").read_text(encoding="utf8"))
+
+        def project(fields, stored):
+            return {
+                key: project(field["items"], stored.get(key, {}))
+                if field["type"] == "object"
+                else copy.deepcopy(stored.get(key, field["default"]))
+                for key, field in fields.items()
+            }
+
+        return project(schema, config)
+
+    def test_upgrade_without_profiles_survives_host_loading_and_restart(self):
+        old = {
+            "connection": {"model": "legacy-model", "voice": "legacy-voice"},
+            "language_models": {"enabled": False, "ja_model": "ja-model", "ja_voice": "ja-voice"},
+        }
+        config = self.host_load(old)
+        self.assertTrue(settings.migrate_voices(config))
+        self.assertEqual(config["voices"]["default_model"], "legacy-model")
+        self.assertEqual(config["voices"]["default_voice"], "legacy-voice")
+        self.assertEqual(config["voices"]["default_ja_voice"], "ja-voice")
+        self.assertFalse(config["voices"]["default_per_language"])
+        restarted = self.host_load(config)
+        self.assertFalse(settings.migrate_voices(restarted))
+        self.assertEqual(settings.snapshot(restarted)["voices"], config["voices"])
+        # Clearing the new default must never resurrect an old voice on restart.
+        restarted["voices"]["default_voice"] = ""
+        self.assertEqual(settings.snapshot(self.host_load(restarted))["voices"]["default_voice"], "")
+
+    def test_hidden_compatibility_fields_do_not_leak_into_dashboard_or_profiles(self):
+        config = self.host_load({})
+        self.assertFalse(settings.migrate_voices(config))
+        public = settings.public_settings(config)
+        for value in (public["config"], settings.profile_config(config)):
+            self.assertNotIn("language_models", value)
+            self.assertNotIn("model", value["connection"])
+            self.assertNotIn("voice", value["connection"])
+        self.assertNotIn("language_models", public["schema"])
+        self.assertNotIn("model", public["schema"]["connection"]["items"])
+
     def legacy_config(self):
         config = h.defaults()
         config["connection"]["model"] = "legacy-model"
@@ -382,8 +426,17 @@ class LegacyVoiceMigrationTests(unittest.TestCase):
             self.assertEqual(voices[f"default_{code}_model"], f"legacy-{code}-model")
             self.assertEqual(voices[f"default_{code}_voice"], f"legacy-{code}-voice")
 
-    def test_the_language_flag_follows_the_pairs_actually_filled(self):
+    def test_disabled_legacy_language_pairs_stay_disabled(self):
         config = self.legacy_config()
+        config["language_models"]["enabled"] = False
+        self.assertTrue(settings.migrate_voices(config))
+        self.assertFalse(config["voices"]["default_per_language"])
+        self.assertEqual(config["voices"]["default_ja_voice"], "legacy-ja-voice")
+        code, connection = speech_connection(settings.snapshot(config), "こんにちは")
+        self.assertEqual(connection["voice"], "legacy-voice")
+
+    def test_disabled_legacy_flag_does_not_disable_a_new_language_choice(self):
+        config = self.legacy_config(default_per_language=True)
         config["language_models"]["enabled"] = False
         self.assertTrue(settings.migrate_voices(config))
         self.assertTrue(config["voices"]["default_per_language"])

@@ -17,6 +17,11 @@ from .tts_client import TTSError, build_payload, model_id, number, workspace_bas
 SCHEMA = json.loads(
     Path(__file__).with_name("_conf_schema.json").read_text(encoding="utf8")
 )
+# AstrBot needs these hidden fields in its schema to preserve 1.1.x values
+# until initialize() can migrate them. They are not runtime/dashboard settings.
+SCHEMA.pop("language_models", None)
+for _legacy_field in ("model", "voice"):
+    SCHEMA["connection"]["items"].pop(_legacy_field, None)
 # Groups that only exist in 1.1.x profiles; accepted while loading, never saved back.
 LEGACY_GROUPS = frozenset({"language_models"})
 # Internal preview defaults are not exposed as plugin settings.
@@ -177,7 +182,7 @@ def _voice_seed_gaps(voices, seed):
         gaps.update(pair)
         filled_language = True
     if filled_language and not voices.get("default_per_language", False):
-        gaps["default_per_language"] = True
+        gaps["default_per_language"] = bool(seed.get("default_per_language", False))
     return gaps
 
 
@@ -221,13 +226,10 @@ def migrate_voices(config):
     """
     legacy = config.get("language_models")
     connection = config.get("connection", {})
-    seed = _legacy_voice_seed(config) or _profile_voice_seed(config)
+    direct_seed = _legacy_voice_seed(config)
+    seed = direct_seed or _profile_voice_seed(config)
     stale = (
-        legacy is not None
-        or (
-            isinstance(connection, dict)
-            and any(key in connection for key in ("model", "voice"))
-        )
+        bool(direct_seed)
         or bool(_voice_seed_gaps(config.get("voices"), seed))
     )
     if not stale:
