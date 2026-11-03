@@ -32,10 +32,25 @@ from .delivery import (
     synthesize_segments,
 )
 from .panel import PanelMixin
-from .language_models import looks_like_chinese_sentence, speech_connection
+from .language_models import LANGUAGE_NAMES, looks_like_chinese_sentence
 from .pronunciation import compose_settings, estimated_text, parse_dictionary
-from .settings import parse_saved_voices, saved_voice_connection, snapshot, profile_entries, save_profile
+from .settings import (
+    migrate_voices,
+    parse_saved_voices,
+    profile_entries,
+    save_profile,
+    saved_voice_settings,
+    snapshot,
+)
 from .tts_client import TTSError, build_payload, number, synthesize_http, workspace_base
+from .voices import (
+    LANGUAGE_CODES,
+    PAIR_FIELDS,
+    default_pair,
+    normalize_voices,
+    parse_rules,
+    speech_connection,
+)
 
 LANGUAGES = {
     "zh": "zh",
@@ -54,9 +69,10 @@ LANGUAGES = {
     "japanese": "ja",
 }
 MARKER = "qwen_audio_voice_handled"
+PERSONA_MARKER = "qwen_audio_persona"
 
 
-@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "1.1.2")
+@register("astrbot_plugin_qwen_audio_tts", "Shennoter", "阿里云TTS助手", "1.2.0")
 class QwenAudioVoicePlugin(PanelMixin, Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -95,6 +111,20 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
     async def initialize(self):
         """Register authenticated APIs for the official plugin visual view."""
         try:
+            if migrate_voices(self.config):
+                self.config.save_config()
+                logger.info(
+                    "Voice settings migrated: connection model/voice moved into 音色配置."
+                )
+        except Exception as exc:  # noqa: BLE001 - Never block plugin startup on config.
+            logger.warning("Voice settings migration skipped (%s).", type(exc).__name__)
+        model, voice = default_pair(snapshot(self.config))
+        if not (model and voice):
+            logger.warning(
+                "音色配置尚未填写完整的默认模型与音色，朗读会提示先配置；"
+                "可在 WebUI 的“音色配置”页或 /语音设置 音色配置 中设置。"
+            )
+        try:
             web = import_module("astrbot.api.web")
         except ImportError:
             logger.warning(
@@ -109,6 +139,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             ("preview/settings", self.preview_settings, ["GET"]),
             ("preview/generate", self.preview_generate, ["POST"]),
             ("settings/save", self.save_settings, ["POST"]),
+            ("voices/list", self.voice_list, ["GET"]),
             ("cloning/upload", self.cloning_upload, ["POST"]),
             ("cloning/create", self.cloning_create, ["POST"]),
             ("cloning/jobs", self.cloning_jobs, ["GET"]),
@@ -173,6 +204,64 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             and (chat_type != "仅私聊" or event.is_private_chat())
             and (chat_type != "仅群聊" or not event.is_private_chat())
         )
+
+    async def _current_persona(self, event):
+        """Return the AstrBot persona name in effect for this session.
+
+        The name is AstrBot's own persona identifier, read from the current
+        conversation and its session rules; it is never derived from the text.
+        An unavailable persona API (older AstrBot) resolves to ``None`` so the
+        default voice rule keeps working.
+        """
+        cached = event.get_extra(PERSONA_MARKER, None)
+        if cached is not None:
+            return cached or None
+        persona = None
+        try:
+            manager = getattr(self.context, "persona_manager", None)
+            conversations = getattr(self.context, "conversation_manager", None)
+            if manager is not None and conversations is not None:
+                origin = event.unified_msg_origin
+                conversation_id = await conversations.get_curr_conversation_id(origin)
+                conversation = (
+                    await conversations.get_conversation(origin, conversation_id)
+                    if conversation_id
+                    else None
+                )
+                provider_settings = self.context.get_config(origin).get(
+                    "provider_settings", {}
+                )
+                persona_id, selected, _, webchat_default = await manager.resolve_selected_persona(
+                    umo=origin,
+                    conversation_persona_id=getattr(conversation, "persona_id", None),
+                    platform_name=event.get_platform_name(),
+                    provider_settings=provider_settings,
+                )
+                if not webchat_default:
+                    # AstrBot stores the rules against persona_id; the display
+                    # name is only a fallback for builds that return one.
+                    selected_name = (
+                        selected.get("name")
+                        if isinstance(selected, dict)
+                        else getattr(selected, "name", None)
+                    )
+                    for candidate in (persona_id, selected_name):
+                        if (
+                            isinstance(candidate, str)
+                            and candidate.strip()
+                            and candidate.strip() not in ("[%None]", "_chatui_default_")
+                        ):
+                            persona = candidate.strip()
+                            break
+        except Exception as exc:  # noqa: BLE001 - Persona lookup must never break speech.
+            logger.debug(
+                "Persona lookup failed (%s); using the default voice.",
+                type(exc).__name__,
+            )
+            persona = None
+        persona = persona.strip() if isinstance(persona, str) and persona.strip() else None
+        event.set_extra(PERSONA_MARKER, persona or "")
+        return persona
 
     async def _translate(self, text, cfg):
         """Translate speech input only; never mutate the source or saved settings."""
@@ -242,6 +331,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         config_snapshot=None,
         delivery_instruction=None,
         delivery_plan=None,
+        persona=None,
     ):
         """Generate audio exclusively from the plugin's own service configuration.
 
@@ -254,6 +344,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             config_snapshot: Optional isolated dashboard draft for this request.
             delivery_instruction: Request-local emotion and intonation guidance.
             delivery_plan: Optional segments with exact pauses and numeric controls.
+            persona: AstrBot persona name used to pick the model and voice.
 
         Returns:
             Path to the generated audio file.
@@ -290,9 +381,11 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         ):
             raise TTSError("固定参数模式不接受聊天中的临时参数；请在设置中调整。")
         if mode == "动态参数":
-            _, connection = speech_connection(cfg, text, language)
-            if not connection["api_key"] or not connection["voice"]:
-                raise TTSError("请先配置 API Key 和音色。")
+            _, connection = speech_connection(cfg, text, language, persona)
+            if not connection.get("api_key"):
+                raise TTSError("请先配置 API Key。")
+            if not connection.get("voice"):
+                raise TTSError("请先在插件的「音色配置」中填写默认音色。")
             workspace_base(cfg["connection"]["workspace"])
             delivery_instruction, delivery_plan = await plan_dynamic(
                 self.context,
@@ -312,9 +405,9 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             ):
                 raise TTSError("原文超过最大字数。")
             return await synthesize_segments(
-                self, text, language, hot_fix, instruction, guide, segments, cfg
+                self, text, language, hot_fix, instruction, guide, segments, cfg, persona
             )
-        language, connection = speech_connection(cfg, text, language)
+        language, connection = speech_connection(cfg, text, language, persona)
         settings = compose_settings(
             cfg.get("audio", {}),
             cfg.get("pronunciation", {}),
@@ -342,7 +435,9 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         if not key:
             raise TTSError("请在插件的语音服务配置中填写 API Key。")
         if not voice:
-            raise TTSError("请在插件的语音服务配置中填写对应模型的音色 ID。")
+            raise TTSError(
+                "请在插件的「音色配置」中填写对应模型的音色 ID，或先用 /语音设置 音色配置 默认 模型 音色 保存。"
+            )
         base = workspace_base(connection.get("workspace", ""))
         timeout = number(connection.get("timeout", 60), 5, 300, "超时时间")
         number(connection.get("keep_hours", 24), 1, 720, "文件保留小时")
@@ -482,6 +577,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
                 automatic=True,
                 config_snapshot=cfg,
                 delivery_instruction=instruction,
+                persona=await self._current_persona(event),
             )
             record = await self._record(path, text, config_snapshot=cfg)
             # Fast synthesis must not overtake text; skipped sends must not leak tasks.
@@ -589,6 +685,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
                 delivery_instruction=getattr(event, "message_str", "")
                 if self.config.get("delivery", {}).get("mode") == "动态参数"
                 else None,
+                persona=await self._current_persona(event),
             )
             self._track_temporary(event, path)
             record = await self._record(path, text)
@@ -692,6 +789,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
                     "ja": "日语",
                 }[code]
                 request_options["config_snapshot"] = cfg
+        persona = await self._current_persona(event)
         if delivery_instruction or delivery_plan:
             path = await self._speak(
                 text,
@@ -700,16 +798,18 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
                 instruction=instruction,
                 delivery_instruction=delivery_instruction,
                 delivery_plan=delivery_plan,
+                persona=persona,
                 **request_options,
             )
         elif hot_fix is None and instruction is None:
-            path = await self._speak(text, language=code, **request_options)
+            path = await self._speak(text, language=code, persona=persona, **request_options)
         else:
             path = await self._speak(
                 text,
                 language=code,
                 hot_fix=hot_fix,
                 instruction=instruction,
+                persona=persona,
                 **request_options,
             )
         self._track_temporary(event, path)
@@ -885,7 +985,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         name = aliases.get(name, name)
         if name == "saved_voice":
             self._save_group(
-                "connection", saved_voice_connection(self.config, str(value))
+                "voices", saved_voice_settings(self.config, str(value))
             )
             return name, value
         bounds = {
@@ -932,7 +1032,7 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             raise TTSError("持久词典已按汉语、日语、英语独立设置，请在发音与词典中编辑对应词典。")
         else:
             raise TTSError(
-                "不支持该设置。可修改概率、字数、开关、双输出、文字先发、冷却、发音模式、词典开关及常用音频参数。"
+                "不支持该设置。可修改概率、字数、开关、双输出、文字先发、冷却、发音模式、词典开关及常用音频参数；音色规则请用 /语音设置 音色配置。"
             )
         values = dict(self.config.get(group, {}))
         values[name] = result
@@ -949,10 +1049,11 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
 
         只有用户明确说设置、以后、一直、默认、关闭、开启等长期修改意图时才修改。
         单次朗读或单次读音要求必须使用 qwen_speak，不能通过本工具永久修改默认指令。
-        管理员要求切换已保存音色时，先用 saved_voices 查看名称，再用 saved_voice 同时切换模型和音色；不得杜撰名称。
+        管理员要求切换已保存音色时，先用 saved_voices 查看名称，再用 saved_voice 同时切换模型和音色；该操作修改的是“音色配置”的默认音色，不修改人格规则。不得杜撰名称。
+        人格与语言音色规则属于结构化配置，只提示管理员使用 /语音设置 音色配置 相关命令，不要用本工具猜测修改。
 
         Args:
-            setting(string): status 查看状态；修改可选 probability、max_chars、enabled、dual_output、text_first、cooldown_seconds、request_mode、dictionary_enabled、rate、pitch、volume、seed、sample_rate、bit_rate、format、language、instruction、hot_fix_json；saved_voices 列出已保存音色，saved_voice 按名称切换模型与音色。
+            setting(string): status 查看状态；修改可选 probability、max_chars、enabled、dual_output、text_first、cooldown_seconds、request_mode、dictionary_enabled、rate、pitch、volume、seed、sample_rate、bit_rate、format、language、instruction、hot_fix_json；saved_voices 列出已保存音色，saved_voice 按名称把该音色设为“音色配置”的默认模型与音色。
             value(string): 新值字符串，概率按百分比 0～100，开关用 on/off，模式用 hot_fix/instruction/both；status 或 saved_voices 时填空字符串；saved_voice 填已保存音色的完整名称。
 
         Returns:
@@ -964,10 +1065,21 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         if not self._scope_allowed(event):
             return "当前会话不在语音功能启用范围内。"
         if setting == "status":
+            voices = snapshot(self.config)["voices"]
+            try:
+                rule_count = len(parse_rules(voices["rules_json"]))
+            except TTSError:
+                rule_count = "invalid"
             return json.dumps(
                 {
                     "reply": self.config.get("reply", {}),
                     "audio": self.config.get("audio", {}),
+                    "voices": {
+                        "enabled": voices["enabled"],
+                        "default_model": voices["default_model"],
+                        "default_voice": voices["default_voice"],
+                        "persona_rules": rule_count,
+                    },
                     "request_mode": self.config.get("pronunciation", {}).get(
                         "request_mode", "hot_fix"
                     ),
@@ -1049,6 +1161,145 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
         except TTSError as exc:
             return "词典未保存：" + str(exc)
 
+    def _saved_voice_pair(self, name):
+        """Resolve one saved voice by name, with the same checks as /语音设置 音色."""
+        voices = saved_voice_settings(self.config, str(name))
+        return voices["default_model"], voices["default_voice"]
+
+    async def _known_personas(self):
+        """List AstrBot persona names so the command can show valid values."""
+        return await self._persona_names()
+
+    def _save_rules(self, rules):
+        voices = snapshot(self.config)["voices"]
+        voices["rules_json"] = "[]" if not rules else json.dumps(rules, ensure_ascii=False)
+        self._save_group("voices", normalize_voices(voices))
+
+    def _write_rule(self, rules, persona, model, voice, language=None):
+        """Insert or update the single rule owned by one persona."""
+        persona = persona.strip()
+        if not persona:
+            raise TTSError("请填写人格名称。")
+        rule = next((item for item in rules if item["persona"] == persona), None)
+        if rule is None:
+            rule = {"persona": persona, "per_language": False}
+            for field in PAIR_FIELDS:
+                rule[field] = ""
+            rules.append(rule)
+        if language:
+            rule["per_language"] = True
+            rule[f"{language}_model"], rule[f"{language}_voice"] = model, voice
+        else:
+            rule["model"], rule["voice"] = model, voice
+        self._save_rules(rules)
+        scope = f"{LANGUAGE_NAMES[language]} " if language else ""
+        return f"人格 {persona} 的{scope}音色已保存：{model} / {voice}"
+
+    async def _voice_rule_report(self, voices):
+        rules = parse_rules(voices.get("rules_json", "[]"))
+        lines = [
+            "音色配置：启用"
+            + ("开" if voices.get("enabled", True) else "关")
+            + "；默认音色 "
+            + (f"{voices['default_model']} / {voices['default_voice']}" if voices.get("default_voice", "").strip() else "未配置"),
+        ]
+        if voices.get("default_per_language"):
+            pairs = [
+                f"{LANGUAGE_NAMES[code]} {voices[f'default_{code}_model']}"
+                for code in LANGUAGE_CODES
+                if voices.get(f"default_{code}_model")
+            ]
+            lines.append("默认按语言：" + ("、".join(pairs) if pairs else "未配置"))
+        if rules:
+            lines.append("人格规则：")
+            for rule in rules:
+                text = f"- {rule['persona']} → {rule['model']} / {rule['voice']}" if rule["model"] else f"- {rule['persona']} → 默认配对"
+                if rule["per_language"]:
+                    text += "（" + "、".join(
+                        LANGUAGE_NAMES[code] for code in LANGUAGE_CODES if rule[f"{code}_model"]
+                    ) + "按语言）"
+                lines.append(text)
+        else:
+            lines.append("尚未配置任何人格规则，所有人格使用默认音色。")
+        known = await self._known_personas()
+        if known:
+            lines.append("可配置人格：" + "、".join(known))
+        lines.append(
+            "用法：/语音设置 音色配置 列表；设置 人格 模型 音色；语言 人格 zh|en|ja 模型 音色；"
+            "默认 模型 音色；默认语言 zh|en|ja 模型 音色；删除 人格；开关 开|关"
+        )
+        return "\n".join(lines)
+
+    async def _voice_rule_command(self, value):
+        """Create, update, delete, or list the per-persona voice rules."""
+        tokens = str(value).split()
+        action = tokens[0] if tokens else "列表"
+        args = tokens[1:]
+        voices = snapshot(self.config)["voices"]
+        rules = parse_rules(voices.get("rules_json", "[]"))
+        if action in ("列表", "查看", "list"):
+            return await self._voice_rule_report(voices)
+        if action in ("开关", "enable"):
+            if len(args) != 1 or args[0] not in ("开", "关", "on", "off", "true", "false"):
+                raise TTSError("用法：/语音设置 音色配置 开关 开|关")
+            voices["enabled"] = args[0] in ("开", "on", "true")
+            self._save_group("voices", normalize_voices(voices))
+            return "音色配置已" + ("启用。" if voices["enabled"] else "关闭，所有会话使用默认音色。")
+        if action in ("设置", "set"):
+            if len(args) == 2:
+                persona, pair = args[0], self._saved_voice_pair(args[1])
+            elif len(args) == 3:
+                persona, pair = args[0], (args[1], args[2])
+            else:
+                raise TTSError("用法：/语音设置 音色配置 设置 人格 模型 音色，或 设置 人格 已保存音色名称。")
+            return self._write_rule(rules, persona, *pair)
+        if action in ("语言", "language"):
+            if len(args) not in (3, 4):
+                raise TTSError("用法：/语音设置 音色配置 语言 人格 zh|en|ja 模型 音色。")
+            persona, code = args[0], args[1].lower()
+            if code not in LANGUAGE_CODES:
+                raise TTSError("语言请填写 zh、en 或 ja。")
+            pair = self._saved_voice_pair(args[-1]) if len(args) == 3 else tuple(args[2:])
+            return self._write_rule(rules, persona, pair[0], pair[1], language=code)
+        if action in ("删除", "delete"):
+            if len(args) != 1:
+                raise TTSError("用法：/语音设置 音色配置 删除 人格")
+            remaining = [rule for rule in rules if rule["persona"] != args[0]]
+            if len(remaining) == len(rules):
+                raise TTSError(f"没有找到人格 {args[0]} 的音色规则。")
+            self._save_rules(remaining)
+            return f"已删除人格 {args[0]} 的音色规则。"
+        if action in ("默认", "default"):
+            if len(args) == 1:
+                model, voice = self._saved_voice_pair(args[0])
+            elif len(args) == 2:
+                model, voice = args
+            else:
+                raise TTSError("用法：/语音设置 音色配置 默认 模型 音色。")
+            voices.update(default_model=model, default_voice=voice)
+            self._save_group("voices", normalize_voices(voices))
+            return f"默认音色已保存：{model} / {voice}"
+        if action in ("默认语言", "default_language"):
+            if len(args) not in (3,):
+                raise TTSError("用法：/语音设置 音色配置 默认语言 zh|en|ja 模型 音色。")
+            code = args[0].lower()
+            if code not in LANGUAGE_CODES:
+                raise TTSError("语言请填写 zh、en 或 ja。")
+            model, voice = args[1], args[2]
+            voices.update(
+                {
+                    "default_per_language": True,
+                    f"default_{code}_model": model,
+                    f"default_{code}_voice": voice,
+                }
+            )
+            self._save_group("voices", normalize_voices(voices))
+            return f"默认{LANGUAGE_NAMES[code]}音色已保存：{model} / {voice}"
+        raise TTSError(
+            "音色配置用法：列表、设置 人格 模型 音色、语言 人格 zh|en|ja 模型 音色、"
+            "默认 模型 音色、默认语言 zh|en|ja 模型 音色、删除 人格、开关 开|关。"
+        )
+
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("语音设置")
     async def voice_settings(self, event: AstrMessageEvent, item: str, value: str):
@@ -1059,6 +1310,9 @@ class QwenAudioVoicePlugin(PanelMixin, Star):
             yield event.plain_result("只有管理员可以修改全局语音设置。")
             return
         try:
+            if item in ("音色配置", "音色规则"):
+                yield event.plain_result(await self._voice_rule_command(value))
+                return
             self._update_setting(item, value)
             yield event.plain_result("语音设置已保存。")
         except (TTSError, OSError) as exc:

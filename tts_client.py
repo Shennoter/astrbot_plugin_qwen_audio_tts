@@ -264,7 +264,7 @@ def synthesize_http(base, api_key, payload, timeout=60):
         headers={
             "Authorization": "Bearer " + api_key,
             "Content-Type": "application/json",
-            "User-Agent": "AstrBot-Qwen-Audio-Plugin/0.9.1",
+            "User-Agent": "AstrBot-Qwen-Audio-Plugin/1.2.0",
         },
         method="POST",
     )
@@ -308,3 +308,110 @@ def synthesize_http(base, api_key, payload, timeout=60):
     except (HTTPError, URLError, TimeoutError, OSError):
         raise TTSError("音频已合成，但下载失败；请检查网络。") from None
     return normalize_audio(content, payload["input"]["format"])
+
+
+def _post_json(url, api_key, payload, timeout, failure):
+    """POST JSON with the plugin credential and return the parsed mapping.
+
+    Args:
+        url: Absolute request URL.
+        api_key: The plugin configuration's API key.
+        payload: JSON-serialisable request body.
+        timeout: Timeout in seconds for the request.
+        failure: User-facing message for a transport or shape failure.
+
+    Returns:
+        The decoded response mapping.
+
+    Raises:
+        TTSError: If the request fails or the response is not a usable mapping.
+    """
+    request = Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": "Bearer " + str(api_key).strip(),
+            "Content-Type": "application/json",
+            "User-Agent": "AstrBot-Qwen-Audio-Plugin/1.2.0",
+        },
+        method="POST",
+    )
+    try:
+        with build_opener(NoRedirect()).open(request, timeout=timeout) as response:
+            data = json.loads(response.read(2_000_000))
+    except HTTPError as exc:
+        try:
+            error = json.loads(exc.read())
+        except ValueError:
+            error = {}
+        code = str(error.get("code", "HTTPError"))
+        message = str(error.get("message", "接口请求失败"))
+        raise TTSError(
+            f"HTTP {exc.code} {code}: {message}".replace(
+                str(api_key), "[REDACTED]"
+            )[:800]
+        ) from None
+    except (URLError, TimeoutError, OSError, ValueError):
+        raise TTSError(failure) from None
+    if not isinstance(data, dict) or data.get("code"):
+        raise TTSError(failure)
+    return data
+
+
+def list_voices(base, api_key, timeout=20, limit=200):
+    """List the voice replicas the API created for this workspace.
+
+    ``services/audio/tts/customization`` is the only documented way to enumerate
+    voices; pages are read until the reported total is reached.
+
+    Args:
+        base: Validated workspace API base URL.
+        api_key: The plugin configuration's API key.
+        timeout: Timeout in seconds for each page request.
+        limit: Maximum number of voices to collect.
+
+    Returns:
+        A list of ``{"voice_id": ..., "target_model": ..., "status": ...}``.
+
+    Raises:
+        TTSError: If a page cannot be read or the payload has an unexpected shape.
+    """
+    if not str(api_key).strip():
+        raise TTSError("请先在插件的语音服务配置中填写 API Key。")
+    page_size = 50
+    voices = []
+    for page in range(max(1, (limit + page_size - 1) // page_size)):
+        data = _post_json(
+            base + "/services/audio/tts/customization",
+            api_key,
+            {
+                "model": "voice-enrollment",
+                "input": {
+                    "action": "list_voice",
+                    "page_index": page,
+                    "page_size": page_size,
+                },
+            },
+            timeout,
+            "音色列表返回无效数据，请检查业务空间、网络和超时设置。",
+        )
+        output = data.get("output")
+        entries = output.get("voice_list") if isinstance(output, dict) else None
+        if not isinstance(entries, list):
+            raise TTSError("音色列表返回格式无效，请检查账户权限。")
+        for item in entries:
+            name = item.get("voice_id") if isinstance(item, dict) else None
+            if isinstance(name, str) and name.strip():
+                voices.append(
+                    {
+                        "voice_id": name.strip()[:120],
+                        "target_model": str(item.get("target_model", ""))[:80],
+                        "status": str(item.get("status", ""))[:20],
+                    }
+                )
+        total = output.get("total_count")
+        if len(entries) < page_size or not isinstance(total, int):
+            break
+        if len(voices) >= min(total, limit):
+            break
+    return voices[:limit]
